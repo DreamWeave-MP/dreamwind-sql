@@ -1,0 +1,741 @@
+--!strict
+-- The adapter, timed from Luau: queries over a VFS, a plugin, and a NIF, and the provider scans
+-- and lookups under them, with JessQL left out. Run by `jess run --package dreamwind-sql
+-- --package-path . dreamwind-sql/bench/bench.luau [filter]` from the folder the packages are in,
+-- on a release build. Prints one line per workload: its name, a tab, and the seconds one call
+-- takes. Every workload's result is checked outside the time, before the first batch and after
+-- the last, by a checksum of its rows against the rows the data built here must give. A path that
+-- stopped doing the work fails here instead of posting a time.
+--
+-- The VFS is a stand-in made here, with the vfs package's shapes (a frozen array of keys, and
+-- views whose rows are made as they are read), so the bench needs only what the package depends
+-- on and times the adapter rather than the VFS behind it.
+local engine = require '@jessql/engine'
+local nifModule = require '@nif'
+local nifTables = require '@dreamwind-sql/nif'
+local sql = require '@dreamwind-sql'
+local tes3 = require '@tes3'
+local tes3Tables = require '@dreamwind-sql/tes3'
+local vfsTables = require '@dreamwind-sql/vfs'
+
+-- A build without the verified toolchain runs Luau slower than a release does, so a number from
+-- one says nothing about what ships.
+if not jess.bench.verified then
+  error('dreamwind-sql bench: this jess was built without the verified toolchain: measure on a release build', 0)
+end
+
+local filter: string? = ...
+local only = if filter and filter ~= '' then filter else nil
+
+type Request = engine.Request
+type Rows = engine.SourceRows
+
+local function median(samples: { number }): number
+  table.sort(samples)
+  return samples[(#samples + 1) // 2]
+end
+
+--- Seconds per call of `body`: warmed up, then the median of seven batches of a size that takes
+--- about a tenth of a second, with a full collection before each so one batch's garbage isn't the
+--- next one's. `verify` is given the result of the first call and of one more after the last
+--- batch, outside the time.
+local function measure(body: () -> unknown, verify: (result: unknown) -> ()): number
+  jess.bench.collect()
+  verify(body())
+  local start = os.clock()
+  body()
+  local once = math.max(os.clock() - start, 1e-7)
+  local iterations = math.max(1, math.floor(0.1 / once))
+  local samples = {}
+  for batch = 1, 7 do
+    jess.bench.collect()
+    start = os.clock()
+    for _ = 1, iterations do
+      body()
+    end
+
+    samples[batch] = (os.clock() - start) / iterations
+  end
+
+  verify(body())
+  return median(samples)
+end
+
+--- A number that changes with the rows' count, their order, and every byte of the cells named. A
+--- cell that is absent, one that is false, and one that is true each count differently.
+local function checksum(rows: Rows, columns: { string }): number
+  local total = #rows
+  for _, row in rows do
+    for _, column in columns do
+      local cell = row[column]
+      local value = 1
+      if type(cell) == 'number' then
+        value = cell + 5
+      elseif type(cell) == 'string' then
+        value = 4
+        for index = 1, #cell do
+          value = (value * 33 + string.byte(cell, index)) % 65521
+        end
+      elseif cell == true then
+        value = 3
+      elseif cell == false then
+        value = 2
+      end
+
+      total = (total * 31 + value) % 4294967291
+    end
+  end
+
+  return total
+end
+
+--- Times `body`, whose every result must be rows with the checksum `expected` over `columns`.
+local function workload(name: string, columns: { string }, expected: number, body: () -> Rows)
+  if only and not string.find(name, only, 1, true) then return end
+
+  local function verify(result: unknown)
+    local got = checksum(result :: Rows, columns)
+    if got ~= expected then error(`dreamwind-sql bench: {name}: checksum {got}, not {expected}`, 0) end
+  end
+
+  print(`{name}\t{string.format('%.9f', measure(body, verify))}`)
+end
+
+local function request(columns: { string }, constraints: { engine.Constraint }?): Request
+  return {
+    columns = columns,
+    constraints = constraints or {},
+    whereComplete = true,
+    allowVolatileRows = false,
+  }
+end
+
+--[[ The VFS ]]
+
+local FileCount = 50000
+
+type Stored = { location: string, length: number, archive: string? }
+
+local File = {}
+File.__index = File
+
+type File = typeof(setmetatable({} :: Stored, File))
+
+function File.path(self: File): string return self.location end
+
+function File.size(self: File): number return self.length end
+
+function File.isLoose(self: File): boolean return self.archive == nil end
+
+function File.isArchive(self: File): boolean return self.archive ~= nil end
+
+function File.parentArchivePath(self: File): string? return self.archive end
+
+function File.parentArchiveName(self: File): string?
+  return if self.archive then string.match(self.archive, '[^/]*$') else nil
+end
+
+--- A list whose rows are made when they are read, by index or by a generic `for`: the vfs
+--- package's lazy view.
+local function view<Item>(count: number, row: (index: number) -> Item): { Item }
+  local meta = {
+    __len = function(): number return count end,
+    __index = function(_: unknown, key: unknown): Item?
+      if type(key) ~= 'number' or key < 1 or key > count then return nil end
+
+      return row(key)
+    end,
+
+    __iter = function(): () -> (number?, Item?)
+      local index = 0
+      return function(): (number?, Item?)
+        if index >= count then return nil, nil end
+
+        index += 1
+        return index, row(index)
+      end
+    end,
+  }
+
+  return (setmetatable({}, meta) :: unknown) :: { Item }
+end
+
+--- The first position in sorted `keys` that isn't before `needle`.
+local function lowerBound(keys: { string }, needle: string): number
+  local low, high = 1, #keys + 1
+  while low < high do
+    local middle = (low + high) // 2
+    if keys[middle] < needle then
+      low = middle + 1
+    else
+      high = middle
+    end
+  end
+
+  return low
+end
+
+--- What file `index` of `FileCount` is: a mesh or a texture in turn, under a folder of a hundred,
+--- every tenth in one of three archives. A mesh's stem is its number, which one texture shares.
+local function fileAt(index: number): (string, Stored)
+  local mesh = index % 2 == 0
+  local number = (index + 1) // 2
+  local folder = string.format('%s/generated/%03d', if mesh then 'meshes' else 'textures', number % 100)
+  local key = string.format('%s/%06d.%s', folder, number, if mesh then 'nif' else 'dds')
+  local archive = if index % 10 == 0 then `/data/archive{index % 3}.bsa` else nil
+  return key, { location = `/data/{key}`, length = 1000 + index % 977, archive = archive }
+end
+
+--- The VFS, and its keys in order.
+local function buildVfs(): (vfsTables.Vfs, { string })
+  local files: { [string]: File } = {}
+  local sorted = table.create(FileCount) :: { string }
+  for index = 1, FileCount do
+    local key, stored = fileAt(index)
+    files[key] = setmetatable(stored, File)
+    sorted[index] = key
+  end
+
+  table.sort(sorted)
+
+  local function range(prefix: string): (number, number)
+    if prefix == '' then return 1, #sorted end
+
+    local past = string.sub(prefix, 1, -2) .. string.char(string.byte(prefix, -1) + 1)
+    return lowerBound(sorted, prefix), lowerBound(sorted, past) - 1
+  end
+
+  --- Up to `limit` of the positions `first..last`, from either end: how many, the position before
+  --- the first of them, and which way they run.
+  local function page(first: number, last: number, limit: number?, descending: boolean?): (number, number, number)
+    local count = math.max(0, last - first + 1)
+    if limit then count = math.min(count, limit) end
+
+    if descending then return count, last + 1, -1 end
+
+    return count, first - 1, 1
+  end
+
+  local methods = {
+    revision = function(_: unknown): number return 1 end,
+    contains = function(_: unknown, path: string): boolean return files[path] ~= nil end,
+    getFile = function(_: unknown, path: string): File? return files[path] end,
+    keys = function(_: unknown, limit: number?, descending: boolean?): { string }
+      local count, origin, step = page(1, #sorted, limit, descending)
+      local out = table.create(count) :: { string }
+      for index = 1, count do
+        out[index] = sorted[origin + index * step]
+      end
+
+      return table.freeze(out)
+    end,
+
+    entries = function(_: unknown, limit: number?, descending: boolean?)
+      local count, origin, step = page(1, #sorted, limit, descending)
+      return view(count, function(index: number)
+        local key = sorted[origin + index * step]
+        return { key = key, file = files[key] }
+      end)
+    end,
+
+    keysStartingWith = function(_: unknown, prefix: string, limit: number?, descending: boolean?): { string }
+      local first, last = range(prefix)
+      local count, origin, step = page(first, last, limit, descending)
+      return view(count, function(index: number): string return sorted[origin + index * step] end)
+    end,
+
+    pathsStartingWith = function(_: unknown, prefix: string, limit: number?, descending: boolean?)
+      local first, last = range(prefix)
+      local count, origin, step = page(first, last, limit, descending)
+      return view(count, function(index: number)
+        local key = sorted[origin + index * step]
+        return { key = key, file = files[key] }
+      end)
+    end,
+  }
+
+  return (methods :: unknown) :: vfsTables.Vfs, sorted
+end
+
+--[[ The plugin ]]
+
+local RecordCount = 20000
+
+local RecordTypes = { 'STAT', 'NPC_', 'MISC', 'WEAP', 'LIGH', 'CONT', 'ACTI', 'DOOR' }
+
+local function u32(value: number): string return string.pack('<I4', value) end
+
+local function subrecord(tag: string, payload: string): string
+  return tag .. u32(#payload) .. payload
+end
+
+local function record(tag: string, payload: string, flags: number): string
+  return tag .. u32(#payload) .. u32(0) .. u32(flags) .. payload
+end
+
+local function typeAt(index: number): string return RecordTypes[index % #RecordTypes + 1] end
+
+local function idAt(index: number): string
+  return string.format('%s_object_%05d', string.lower(typeAt(index)), index)
+end
+
+local function flagsAt(index: number): number return if index % 16 == 0 then 0x400 else 0 end
+
+--- Record `index`'s payload: its id, a model, and some data.
+local function payloadAt(index: number): string
+  return subrecord('NAME', idAt(index) .. '\0')
+    .. subrecord('MODL', string.format('meshes\\generated\\%06d.nif\0', index))
+    .. subrecord('DATA', string.rep('\1', 8 + index % 24))
+end
+
+local HeaderPayload = subrecord('HEDR', string.rep('\0', 300))
+
+--- A header and `RecordCount` records of eight types in turn; every sixteenth is flagged.
+local function buildPlugin(): tes3.Plugin
+  local parts = table.create(RecordCount + 1) :: { string }
+  parts[1] = record('TES3', HeaderPayload, 0)
+  for index = 1, RecordCount do
+    parts[index + 1] = record(typeAt(index), payloadAt(index), flagsAt(index))
+  end
+
+  return tes3.open(table.concat(parts))
+end
+
+--[[ The NIF ]]
+
+local Branches, Leaves = 63, 64
+
+local NifCount = 1 + Branches * (Leaves + 1)
+
+--- A root, `Branches` nodes under it, and `Leaves` shapes under each, a shape named by its number,
+--- read back from the saved bytes so that no record is decoded.
+local function buildNif(): nifModule.Nif
+  local file = nifModule.new()
+  local root = file:insert { type = 'NiNode', name = 'Scene Root' }
+  for branch = 1, Branches do
+    local node = file:insert {
+      type = 'NiNode',
+      name = string.format('branch %02d', branch),
+      translation = vector.create(branch, 0, 0),
+    }
+    file:attach(root, node)
+    for leaf = 1, Leaves do
+      local shape = file:insert {
+        type = 'NiTriShape',
+        name = string.format('%06d', (branch - 1) * Leaves + leaf),
+        translation = vector.create(0, leaf, 1),
+      }
+      file:attach(node, shape)
+    end
+  end
+
+  file.roots = { root }
+  return nifModule.open(file:save())
+end
+
+--- The branch a record is, when it is one.
+local function branchAt(index: number): number?
+  return if index > 0 and (index - 1) % (Leaves + 1) == 0 then (index - 1) // (Leaves + 1) + 1 else nil
+end
+
+--- The number a record is named by, when it is a shape.
+local function shapeAt(index: number): number?
+  if index == 0 or branchAt(index) then return nil end
+
+  return (index - 1) // (Leaves + 1) * Leaves + (index - 1) % (Leaves + 1)
+end
+
+--[[ The workloads ]]
+
+local vfs, sortedKeys = buildVfs()
+local plugin = buildPlugin()
+local nif = buildNif()
+local db = sql.new { vfs = vfs, tes3 = plugin, nif = nif }
+
+--- Times a prepared query, whose rows must be `expected`'s.
+local function query(name: string, text: string, columns: { string }, expected: Rows, parameters: { unknown }?)
+  local plan = db:prepare(text)
+  workload(name, columns, checksum(expected, columns), function(): Rows return plan.run(parameters).rows end)
+end
+
+--- Times a scan of `provider`, whose rows must be `expected`'s in the columns asked for.
+local function scan(
+  name: string,
+  provider: { read scan: (request: Request) -> engine.ScanResult },
+  asked: Request,
+  expected: Rows
+)
+  local columns = asked.columns
+  workload(name, columns, checksum(expected, columns), function(): Rows return provider.scan(asked).rows end)
+end
+
+local function stemOf(key: string): string return string.match(key, '([^/]*)%.[^./]*$') :: string end
+
+local function nameOf(key: string): string return string.match(key, '[^/]*$') :: string end
+
+local meshKeys: { string } = {}
+
+for _, key in sortedKeys do
+  if string.sub(key, 1, 7) == 'meshes/' then table.insert(meshKeys, key) end
+end
+
+do
+  local page = {}
+  for index = #meshKeys, #meshKeys - 19, -1 do
+    table.insert(page, { path = meshKeys[index], stem = stemOf(meshKeys[index]) })
+  end
+
+  query(
+    'vfs query: a page of a prefix, from the end',
+    [[SELECT path, stem FROM vfs.files WHERE path LIKE 'meshes/generated/%' ORDER BY path DESC LIMIT 20]],
+    { 'path', 'stem' },
+    page
+  )
+
+  local tail = {}
+  for index = #sortedKeys, #sortedKeys - 19, -1 do
+    table.insert(tail, { path = sortedKeys[index], name = nameOf(sortedKeys[index]) })
+  end
+
+  query(
+    'vfs query: a page of every key, from the end',
+    [[SELECT path, name FROM vfs.files ORDER BY path DESC LIMIT 20]],
+    { 'path', 'name' },
+    tail
+  )
+
+  local under = {}
+  for _, key in meshKeys do
+    table.insert(under, { path = key, name = nameOf(key), stem = stemOf(key) })
+  end
+
+  query(
+    `vfs query: {#under} keys under a prefix`,
+    [[SELECT path, name, stem FROM vfs.files WHERE path LIKE 'meshes/%']],
+    { 'path', 'name', 'stem' },
+    under
+  )
+
+  local archives = {}
+  for archive = 0, 2 do
+    local count, total = 0, 0
+    for index = 10, FileCount, 10 do
+      if index % 3 == archive then
+        count += 1
+        total += 1000 + index % 977
+      end
+    end
+
+    table.insert(archives, { archive_name = `archive{archive}.bsa`, files = count, bytes = total })
+  end
+
+  query(
+    `vfs query: {FileCount} files, those in archives counted by archive`,
+    [[SELECT archive_name, COUNT(*) AS files, SUM(size) AS bytes FROM vfs.files
+      WHERE is_archive = true GROUP BY archive_name ORDER BY archive_name]],
+    { 'archive_name', 'files', 'bytes' },
+    archives
+  )
+
+  local every = table.create(FileCount)
+  for index = 1, FileCount do
+    local key, stored = fileAt(index)
+    local archive = stored.archive
+    every[index] = {
+      path = key,
+      physical_path = stored.location,
+      name = nameOf(key),
+      stem = stemOf(key),
+      size = stored.length,
+      is_loose = archive == nil,
+      is_archive = archive ~= nil,
+      archive_path = archive,
+      archive_name = if archive then nameOf(archive) else nil,
+    }
+  end
+
+  table.sort(every, function(left, right): boolean return left.path < right.path end)
+
+  local files = vfsTables.provider(vfs)
+  local underPrefix = { { column = 'path', op = 'LIKE', value = 'meshes/%' } }
+  scan(`vfs scan: {#under} keys under a prefix`, files, request({ 'path', 'name', 'stem' }, underPrefix), under)
+  scan(`vfs scan: {FileCount} keys and their stems`, files, request { 'path', 'stem' }, every)
+  scan(`vfs scan: {FileCount} files, every column`, files, request(files.columns), every)
+
+  local stemColumns = { 'path', 'stem' }
+  local lookedUp = request(stemColumns)
+  local pair = {
+    { path = 'meshes/generated/045/012345.nif', stem = '012345' },
+    { path = 'textures/generated/045/012345.dds', stem = '012345' },
+  }
+
+  workload(
+    `vfs lookup: the stem index of {FileCount} keys, built`,
+    stemColumns,
+    checksum(pair, stemColumns),
+    function(): Rows
+      local found = vfsTables.provider(vfs).lookup('stem', '012345', lookedUp)
+      return if found then found.rows else {}
+    end
+  )
+
+  local stems = table.create(1000) :: { string }
+  local last = {}
+  for index = 1, 1000 do
+    stems[index] = string.format('%06d', index * 25)
+  end
+
+  for _, kind in { { 'meshes', 'nif' }, { 'textures', 'dds' } } do
+    table.insert(last, { path = `{kind[1]}/generated/000/025000.{kind[2]}`, stem = '025000' })
+  end
+
+  workload(
+    'vfs lookup: 1000 stems of two files each, the last one\'s rows kept',
+    stemColumns,
+    checksum(last, stemColumns),
+    function(): Rows
+      local rows: Rows = {}
+      for _, stem in stems do
+        local found = files.lookup('stem', stem, lookedUp)
+        if found and #found.rows == 2 then rows = found.rows end
+      end
+
+      return rows
+    end
+  )
+end
+
+do
+  local joined = {}
+  for index = NifCount - 1, NifCount - 10, -1 do
+    local number = shapeAt(index) :: number
+    table.insert(joined, { path = string.format('meshes/generated/%03d/%06d.nif', number % 100, number), index = index })
+  end
+
+  query(
+    'join query: a page of files joined to NIF records by stem, from the end',
+    [[SELECT f.path, n.index FROM vfs.files f
+      JOIN nif.records n ON f.stem = n.name
+      WHERE f.path LIKE 'meshes/generated/%'
+      ORDER BY n.index DESC LIMIT 10]],
+    { 'path', 'index' },
+    joined
+  )
+
+  local pairs, total = 0, 0
+  for index = 0, NifCount - 1 do
+    if shapeAt(index) then
+      pairs += 2
+      total += index * 2
+    end
+  end
+
+  query(
+    `join query: {pairs // 2} NIF records joined to their two files each`,
+    [[SELECT COUNT(*) AS pairs, SUM(n.index) AS total FROM vfs.files f JOIN nif.records n ON f.stem = n.name]],
+    { 'pairs', 'total' },
+    { { pairs = pairs, total = total } }
+  )
+end
+
+do
+  local records = tes3Tables.provider(plugin)
+  local every = table.create(RecordCount + 1)
+  every[1] = { index = 0, type = 'TES3', flags = 0, size = #HeaderPayload, dirty = false, partial = false }
+  for index = 1, RecordCount do
+    every[index + 1] = {
+      index = index,
+      type = typeAt(index),
+      id = idAt(index),
+      flags = flagsAt(index),
+      size = #payloadAt(index),
+      dirty = false,
+      partial = false,
+    }
+  end
+
+  scan(`tes3 scan: {RecordCount + 1} records, every column`, records, request(records.columns), every)
+  scan(`tes3 scan: {RecordCount + 1} records, index and type`, records, request { 'index', 'type' }, every)
+
+  local doors = {}
+  for index = 1, RecordCount do
+    if typeAt(index) == 'DOOR' then table.insert(doors, { index = index, id = idAt(index) }) end
+  end
+
+  query(
+    `tes3 query: {#doors} records of one type, with their ids`,
+    [[SELECT index, id FROM tes3.records WHERE type = 'DOOR']],
+    { 'index', 'id' },
+    doors
+  )
+
+  local types = table.clone(RecordTypes)
+  table.insert(types, 'TES3')
+  table.sort(types)
+  local counted = {}
+  for _, tag in types do
+    table.insert(counted, { type = tag, records = if tag == 'TES3' then 1 else RecordCount // #RecordTypes })
+  end
+
+  query(
+    `tes3 query: {RecordCount + 1} records counted by type`,
+    [[SELECT type, COUNT(*) AS records FROM tes3.records GROUP BY type ORDER BY type]],
+    { 'type', 'records' },
+    counted
+  )
+
+  local late = RecordCount - 3
+  query(
+    'tes3 query: one record by its type and id, near the end',
+    [[SELECT index, size FROM tes3.records WHERE type = ? AND id = ?]],
+    { 'index', 'size' },
+    { { index = late, size = #payloadAt(late) } },
+    { typeAt(late), idAt(late) }
+  )
+
+  query(
+    `tes3 query: one record by its id, among {RecordCount + 1}`,
+    [[SELECT index, type FROM tes3.records WHERE id = ?]],
+    { 'index', 'type' },
+    { { index = late, type = typeAt(late) } },
+    { idAt(late) }
+  )
+
+  local flagged = {}
+  for index = RecordCount, 1, -1 do
+    if flagsAt(index) ~= 0 then table.insert(flagged, { index = index, type = typeAt(index) }) end
+
+    if #flagged == 20 then break end
+  end
+
+  query(
+    'tes3 query: a page of flagged records, from the end',
+    [[SELECT index, type FROM tes3.records WHERE flags = 1024 ORDER BY index DESC LIMIT 20]],
+    { 'index', 'type' },
+    flagged
+  )
+
+  local bytes, plain = #HeaderPayload, 1
+  for index = 1, RecordCount do
+    if flagsAt(index) == 0 then
+      bytes += #payloadAt(index)
+      plain += 1
+    end
+  end
+
+  query(
+    `tes3 query: {RecordCount + 1} records, the sizes of the unflagged summed`,
+    [[SELECT SUM(size) AS bytes, COUNT(*) AS records FROM tes3.records
+      WHERE flags = 0 AND dirty = false AND partial = false]],
+    { 'bytes', 'records' },
+    { { bytes = bytes, records = plain } }
+  )
+end
+
+do
+  local records = nifTables.recordsProvider(nif)
+  local every = table.create(NifCount)
+  for index = 0, NifCount - 1 do
+    local branch, shape = branchAt(index), shapeAt(index)
+    every[index + 1] = {
+      index = index,
+      type = if shape then 'NiTriShape' else 'NiNode',
+      name = if shape then string.format('%06d', shape)
+        elseif branch then string.format('branch %02d', branch)
+        else 'Scene Root',
+      decoded = false,
+    }
+  end
+
+  local page = {}
+  for index = NifCount - 1, 0, -1 do
+    if not shapeAt(index) then table.insert(page, { index = index, type = 'NiNode' }) end
+
+    if #page == 20 then break end
+  end
+
+  query(
+    'nif query: a page of one type, from the end',
+    [[SELECT index, type FROM nif.records WHERE type = 'NiNode' ORDER BY index DESC LIMIT 20]],
+    { 'index', 'type' },
+    page
+  )
+
+  query(
+    `nif query: {NifCount} records counted by type`,
+    [[SELECT type, COUNT(*) AS records FROM nif.records GROUP BY type ORDER BY type]],
+    { 'type', 'records' },
+    { { type = 'NiNode', records = Branches + 1 }, { type = 'NiTriShape', records = Branches * Leaves } }
+  )
+
+  scan(`nif scan: {NifCount} records, index and type`, records, request { 'index', 'type' }, every)
+  scan(`nif scan: {NifCount} records, every column`, records, request(records.columns), every)
+
+  local wanted = NifCount - Leaves + 6
+  query(
+    `nif query: one record by its name, among {NifCount}`,
+    [[SELECT index, type FROM nif.records WHERE name = ?]],
+    { 'index', 'type' },
+    { { index = wanted, type = 'NiTriShape' } },
+    { string.format('%06d', shapeAt(wanted) :: number) }
+  )
+
+  local nodes = nifTables.sceneNodesProvider(nif)
+  local scene = table.create(NifCount)
+  for index = 0, NifCount - 1 do
+    local branch, shape = branchAt(index), shapeAt(index)
+    local parent = (index - 1) // (Leaves + 1) * (Leaves + 1) + 1
+    local leaf = (index - 1) % (Leaves + 1)
+    scene[index + 1] = {
+      index = index,
+      source = index,
+      record_type = every[index + 1].type,
+      name = every[index + 1].name,
+      parent = if shape then parent elseif branch then 0 else nil,
+      subtree_end = if shape then index + 1 elseif branch then index + Leaves + 1 else NifCount,
+      billboard = false,
+      visibility = 'Visible',
+      local_x = branch or 0,
+      local_y = if shape then leaf else 0,
+      local_z = if shape then 1 else 0,
+      world_x = branch or if shape then (index - 1) // (Leaves + 1) + 1 else 0,
+      world_y = if shape then leaf else 0,
+      world_z = if shape then 1 else 0,
+    }
+  end
+
+  scan(`scene scan: {NifCount} nodes, every column`, nodes, request(nodes.columns), scene)
+  scan(`scene scan: {NifCount} nodes, their names and parents`, nodes, request { 'index', 'name', 'parent' }, scene)
+
+  local branches = {}
+  for branch = 1, Branches do
+    table.insert(branches, { name = string.format('branch %02d', branch), world_x = branch })
+  end
+
+  query(
+    `scene query: the {Branches} nodes under the root, among {NifCount}`,
+    [[SELECT name, world_x FROM nif.scene_nodes WHERE parent = 0 ORDER BY index]],
+    { 'name', 'world_x' },
+    branches
+  )
+
+  local shapes = {}
+  for index = NifCount - 1, NifCount - 20, -1 do
+    table.insert(shapes, { index = index, name = every[index + 1].name })
+  end
+
+  query(
+    'scene query: a page of shapes, from the end',
+    [[SELECT index, name FROM nif.scene_nodes WHERE record_type = 'NiTriShape' ORDER BY index DESC LIMIT 20]],
+    { 'index', 'name' },
+    shapes
+  )
+
+  query(
+    `scene query: {Branches * Leaves} visible shapes counted, the furthest found`,
+    [[SELECT COUNT(*) AS nodes, MAX(world_y) AS furthest FROM nif.scene_nodes
+      WHERE record_type = 'NiTriShape' AND visibility = 'Visible']],
+    { 'nodes', 'furthest' },
+    { { nodes = Branches * Leaves, furthest = Leaves } }
+  )
+end
