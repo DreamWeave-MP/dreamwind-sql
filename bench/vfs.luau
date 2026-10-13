@@ -1,0 +1,21 @@
+-- A prefix scan, ordered and limited, over a VFS built here. Run from the folder the packages are
+-- in: jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/vfs.luau
+local sql = require('@dreamwind-sql')
+local vfsmod = require('@vfs')
+
+local count = tonumber((...)) or 50000
+local vfs = vfsmod.VFS.new()
+for index = 1, count do
+    local prefix = if index % 2 == 0 then 'meshes' else 'textures'
+    local ext = if index % 2 == 0 then '.nif' else '.dds'
+    local key = string.format('%s/generated/%06d%s', prefix, index, ext)
+    vfs:setWinnerFile(key, vfsmod.VfsFile.from('/tmp/dreamwind-sql/' .. key))
+end
+local db = sql.new { vfs = vfs }
+local plan = db:prepare([[SELECT path, stem FROM vfs.files
+    WHERE path LIKE 'meshes/generated/%'
+    ORDER BY path DESC LIMIT 20]])
+local before = os.clock()
+local result = plan.run()
+local elapsed = (os.clock() - before) * 1000
+print(string.format('rows=%d result=%d query_ms=%.3f first=%s', count, #result.rows, elapsed, result.rows[1].path))

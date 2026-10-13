@@ -1,0 +1,21 @@
+-- An indexed join of a VFS built here against a NIF's records. Run from the folder the packages are
+-- in: jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/cross-domain.luau
+local sql=require('@dreamwind-sql')
+local vfsmod=require('@vfs')
+local nifmod=require('@nif')
+local count=tonumber((...)) or 50000
+local vfs=vfsmod.VFS.new()
+local nif=nifmod.new()
+for index=1,count do
+  local stem=string.format('%06d',index*2)
+  local key='meshes/generated/'..stem..'.nif'
+  vfs:setWinnerFile(key,vfsmod.VfsFile.from('/tmp/dreamwind-sql/'..key))
+  nif:insert({type='NiNode',name=stem})
+end
+local db=sql.new{vfs=vfs,nif=nif}
+local plan=db:prepare([[SELECT f.path, n.index FROM vfs.files f
+JOIN nif.records n ON f.stem = n.name
+WHERE f.path LIKE 'meshes/generated/%'
+ORDER BY n.index DESC LIMIT 20]])
+print('strategy',plan.explain().joins[1].strategy)
+for round=1,3 do local started=os.clock(); local result=plan.run(); print(round,(os.clock()-started)*1000,#result.rows,result.rows[1].path,result.rows[1].index) end
