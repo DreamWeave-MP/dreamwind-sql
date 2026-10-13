@@ -1,6 +1,7 @@
 --!strict
 --!native
 
+local bytes = require('@dream/bytes')
 local tes3 = require('@tes3')
 local util = require('./util')
 
@@ -54,12 +55,28 @@ local function recordIterator(plugin: Plugin, request: Request): Iterator
   local onlyFlags, onlySize = util.number(request, 'flags'), util.number(request, 'size')
   local onlyDirty, onlyPartial = util.flag(request, 'dirty'), util.flag(request, 'partial')
 
+  -- A tag is four bytes, read as a number: a record is of the type asked for when its number is
+  -- that type's, and none is of a type of any other length, whose number is left nil.
+  local onlyCode: number? = if onlyType and #onlyType == 4 then tes3.tags.code(onlyType) else nil
+
+  -- An id that is ASCII is spelled in a plugin's code page as it is when decoded, so a record has
+  -- it when the bytes of its id are the same, and no id is decoded to find that out. A save's ids
+  -- are typed, and compare as the text they read as.
+  local onlySpelling: string? = if onlyId and plugin.profile ~= 'omwsave' and not string.find(onlyId, '[\128-\255]')
+    then onlyId
+    else nil
+
   local function build(index: number): Row?
-    local tag = plugin:tag(index)
-    if onlyType and tag ~= onlyType then return nil end
+    if onlyType and plugin:code(index) ~= onlyCode then return nil end
 
     local id: string? = nil
-    if wantId or onlyId then
+    if onlySpelling then
+      local source, at, length = tes3.records.idSpan(plugin, index)
+      if not source or length ~= #onlySpelling then return nil end
+      if bytes.compare(source, at, onlySpelling, 0, length) ~= 0 then return nil end
+
+      id = onlySpelling
+    elseif wantId or onlyId then
       id = tes3.records.id(plugin, index)
       if onlyId and id ~= onlyId then return nil end
     end
@@ -91,7 +108,7 @@ local function recordIterator(plugin: Plugin, request: Request): Iterator
 
     local row = table.clone(template)
     if wantIndex then row.index = index end
-    if wantType then row.type = tag end
+    if wantType then row.type = onlyType or plugin:tag(index) end
     if wantId then row.id = id end
     if wantFlags then row.flags = flags end
     if wantSize then row.size = size end
