@@ -27,16 +27,27 @@ Physical metadata is touched only when selected.
 
 The adapter uses each package's own structure instead of decoding/materializing first:
 
+- every table hands its rows to JessQL one at a time (`iterate`), in index order for a plugin's and
+  a NIF's and in path order for a VFS's, so a single-table query with a `LIMIT` reads no more rows
+  than it keeps, with a `WHERE` the table applies or without one;
+- every table answers a bare `SELECT COUNT(*)` from its source's own count, with no row made;
+- a single-table query's rows are one table filled over and over (JessQL's volatile rows), so an
+  aggregate over a whole table allocates no row;
 - lexical VFS path-prefix scans use the `vfs` package's sorted-key range index;
 - `ORDER BY path ... LIMIT` pages directly from that range;
 - VFS `stem` is an indexed lookup target for JessQL equijoins;
 - the stem index is revision-keyed and invalidates after VFS mutation;
-- TES3 record index/type/id constraints are pushed into record traversal;
+- TES3 record index/type/id constraints are pushed into record traversal: a type is compared as its
+  tag's number, and an ASCII id by its bytes where they lie, with no id decoded;
 - NIF record index/type/name/decoded constraints are pushed down;
-- NIF records expose a lazy ordered iterator, so indexed joins can stop after enough rows;
 - NIF `type` queries use `typeOf()` without decoding records;
 - names use the `nif` package's refill-in-place reader only when needed;
 - `nif.scene_nodes` builds/caches the scene only when queried.
+
+A table says it applied a `WHERE` only when every constraint is one it applies in full: `=` on its
+own columns with a value of the column's kind, one constraint to a column (and for `vfs.files`,
+`=` or a prefix `LIKE` on `path`, any number of them). Anything else it leaves to JessQL, which then
+filters the rows itself.
 
 ## Example
 
@@ -54,22 +65,34 @@ LIMIT 20]])
 
 Yes, this is SQL joining Morrowind's VFS against its NIF records in Luau.
 
-## 0.1.1 benchmark snapshot
+## Benchmarks
 
-Synthetic timings on the supplied Jess binary:
+`BENCHMARKS.md` has the numbers, measured on a verified release build, and what each is made of.
+In short, on 50,000 files, 20,001 records, and a 4,096-record NIF: a page of twenty rows from any
+one table takes 15 to 110 µs whatever the `WHERE` the table applies, a bare `COUNT(*)` under a
+millisecond, a scan of a whole table 0.2 to 1.1 µs a row, and a stem lookup about 1.2 µs. The
+indexed join of the example above still makes every pair before it keeps twenty (9 ms for 4,032
+NIF records against 50,000 files): JessQL's indexed join stops early only for a query with no
+`WHERE` and no `ORDER BY`.
 
-- 100k-entry VFS prefix/order/limit query: ~35 ms cold index build, **~0.04-0.07 ms warm**.
-- 100k-record NIF type/order/limit query: **~0.02-0.04 ms**.
-- 50k x 50k VFS↔NIF indexed join/order/limit: ~35 ms cold, **~0.07-0.09 ms warm**.
-
-The cold VFS number includes construction of the sorted VFS key index and lazy stem index; both are
-reused until the VFS revision changes. See `bench/` for the workloads.
+The VFS's sorted key index and the stem index are built on first use and kept until the VFS
+revision changes.
 
 ## Running the benchmarks
 
-Each script takes an optional row count. Run them from the folder the packages are checked out in.
-`bench/vfs.luau` and `bench/cross-domain.luau` build a VFS to query, so they name the `vfs` package
-outright; `--package-path .` finds what the packages depend on.
+`bench/bench.luau` is the measured one: it times queries, scans, and lookups over a VFS stand-in, a
+plugin, and a NIF it builds, checks every workload's rows, and prints a line for each. It needs
+only what the package depends on, and takes an optional filter on the workload names. Run it from
+the folder the packages are checked out in.
+
+```sh
+jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/bench.luau
+jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/bench.luau 'vfs scan'
+```
+
+The three older scripts each run one query a few times and print what it took. Each takes an
+optional row count. `bench/vfs.luau` and `bench/cross-domain.luau` build a real VFS to query, so
+they name the `vfs` package outright; `--package-path .` finds what the packages depend on.
 
 ```sh
 jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/nif.luau 100000
