@@ -269,8 +269,79 @@ local function fileIterator(vfs: Vfs, request: Request): Iterator
   }
 end
 
+--- What a lookup makes its rows with, and what the request it was worked out for said: its
+--- columns and constraints as they read then, by key, and how many of each there were. An indexed
+--- join looks a stem up for every row it drives with, all by one request, so the last plan is
+--- kept; a caller may change a request between two lookups, so it is kept by what the request
+--- said and not by which table it was.
+type LookupPlan = {
+  columns: { [unknown]: unknown },
+  columnCount: number,
+  constraints: { [unknown]: util.Constraint },
+  constraintCount: number,
+  whereComplete: unknown,
+  make: (key: string, given: File?) -> Row?,
+  handledWhere: boolean,
+  handledConstraints: boolean,
+  matchesPath: ((key: string) -> boolean)?,
+}
+
+local Empty = table.freeze {}
+
+local function lookupPlan(vfs: Vfs, request: Request): LookupPlan
+  local make = rowMaker(vfs, request)
+  local _, _, handledWhere, handledConstraints, matchesPath = pathPlan(request)
+  local columns: { [unknown]: unknown } = table.clone(request.columns or Empty)
+  local constraints: { [unknown]: util.Constraint } = {}
+  local columnCount, constraintCount = 0, 0
+  for _ in columns do
+    columnCount += 1
+  end
+
+  for key, constraint in request.constraints or Empty do
+    constraints[key] = table.clone(constraint)
+    constraintCount += 1
+  end
+
+  return {
+    columns = columns,
+    columnCount = columnCount,
+    constraints = constraints,
+    constraintCount = constraintCount,
+    whereComplete = request.whereComplete,
+    make = make,
+    handledWhere = handledWhere,
+    handledConstraints = handledConstraints,
+    matchesPath = matchesPath,
+  }
+end
+
+--- Whether a request says what the one a plan was worked out for said.
+local function planned(plan: LookupPlan, request: Request): boolean
+  if request.whereComplete ~= plan.whereComplete then return false end
+
+  local columnCount, constraintCount = 0, 0
+  for key, name in request.columns or Empty do
+    if plan.columns[key] ~= name then return false end
+
+    columnCount += 1
+  end
+
+  for key, constraint in request.constraints or Empty do
+    local was = plan.constraints[key]
+    if not was or was.column ~= constraint.column or was.op ~= constraint.op or was.value ~= constraint.value then
+      return false
+    end
+
+    constraintCount += 1
+  end
+
+  return columnCount == plan.columnCount and constraintCount == plan.constraintCount
+end
+
 function exports.provider(vfs: Vfs): Provider
   local indexedRevision = -1
+  local plan: LookupPlan? = nil
   local stemFirst: { [string]: string }, stemDuplicates: { [string]: { string } } = {}, {}
 
   local function ensureStemIndex()
@@ -295,25 +366,29 @@ function exports.provider(vfs: Vfs): Provider
   local function lookup(column: string, value: unknown, request: Request): ScanResult?
     if column ~= 'stem' or type(value) ~= 'string' then return nil end
     ensureStemIndex()
-    local make = rowMaker(vfs, request)
-    local _, _, handledWhere, handledConstraints, matchesPath = pathPlan(request)
-    local out: { Row } = {}
-    local first = stemFirst[value]
-    if first ~= nil then
-      local bucket = stemDuplicates[value]
-      if bucket ~= nil then
-        for _, key in bucket do
-          if not matchesPath or matchesPath(key) then
-            local row = make(key, nil)
-            if row ~= nil then out[#out+1] = row end
-          end
-        end
-      elseif not matchesPath or matchesPath(first) then
-        local row = make(first, nil)
-        if row ~= nil then out[1] = row end
-      end
+    local current = plan
+    if not current or not planned(current, request) then
+      current = lookupPlan(vfs, request)
+      plan = current
     end
-    return util.scanResult(out, handledWhere, false, false, handledConstraints)
+
+    local make, matchesPath = current.make, current.matchesPath
+    local out: { Row } = {}
+    local count = 0
+
+    -- One key has the stem, or every key of its bucket does.
+    local first = stemFirst[value]
+    for _, key in stemDuplicates[value] or { first } do
+      if matchesPath and not matchesPath(key) then continue end
+
+      local row = make(key, nil)
+      if not row then continue end
+
+      count += 1
+      out[count] = row
+    end
+
+    return util.scanResult(out, current.handledWhere, false, false, current.handledConstraints)
   end
 
   return {
