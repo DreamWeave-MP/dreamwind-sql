@@ -28,7 +28,8 @@ type Entry = { key: string, file: File }
 
 --- The VFS a `vfs.files` table reads. This package does not depend on the vfs package, so this is
 --- the part of its VFS the adapter calls. A list it hands back is walked with a `for` by a scan
---- and a lookup, and read by its length and by index, one entry at a time, by `iterate`.
+--- and a lookup, and read by its length and by index, one entry at a time, by `iterate`, which
+--- walks a list whole when its length reads as none.
 export type Vfs = {
   revision: (self: Vfs) -> number,
   contains: (self: Vfs, path: string) -> boolean,
@@ -250,10 +251,26 @@ local function rowsFor(vfs: Vfs, request: Request): ScanResult
   return util.scanResult(out, handledWhere, ordered, limit ~= nil, handledConstraints)
 end
 
+--- A list that only a `for` can walk, as one that is read by index.
+local function listed(items: { string } | { Entry }): { string } | { Entry }
+  local out = {}
+  for _, item in items do
+    table.insert(out, item)
+  end
+
+  return (out :: unknown) :: { string } | { Entry }
+end
+
 local function fileIterator(vfs: Vfs, request: Request): Iterator
   local volatile = request.allowVolatileRows == true
   local candidates, rowOf, handledWhere, ordered, _, handledConstraints = plan(vfs, request, volatile)
   local position, count = 0, #candidates
+
+  -- A list with nothing to read by index may still have items for a `for`, as a scan reads it.
+  if count == 0 then
+    candidates = listed(candidates)
+    count = #candidates
+  end
 
   local function nextRow(): Row?
     while position < count do

@@ -485,6 +485,23 @@ for _, lazy in { false, true } do
       local rocks = walking.lookup('stem', 'rock', request { 'path' })
       assert(rocks)
       expect(#rocks.rows).toBe(3)
+
+      -- One at a time too, which is how a query reads the table.
+      expect(drain(walking.iterate(request(FileColumns)))).toEqual(fileRows(allKeys(), FileColumns))
+      expect(drain(walking.iterate(request(KeyColumns, { where('path', 'LIKE', 'icons/%') })))).toEqual(
+        fileRows({ 'icons/a.dds' }, KeyColumns)
+      )
+
+      expect(walking.iterate(request(KeyColumns, { where('path', 'LIKE', 'sound/%') })).next()).toBeNil()
+      expect(walking.count()).toBe(#Listings)
+
+      local db = sql.new { vfs = (only :: unknown) :: vfsTables.Vfs }
+      expect(db:query('SELECT path FROM vfs.files').rows).toEqual(fileRows(allKeys(), { 'path' }))
+      expect(db:query('SELECT path, size FROM vfs.files WHERE path LIKE \'meshes/%\' ORDER BY path DESC LIMIT 2').rows).toEqual(
+        fileRows({ 'meshes/y/rock.nif', 'meshes/y/rock.kf' }, { 'path', 'size' })
+      )
+
+      expect(db:query('SELECT COUNT(*) AS files FROM vfs.files').rows).toEqual { { files = #Listings } }
     end)
 
     suite.it('lists keys alone when no column needs the file', function()
