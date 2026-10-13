@@ -17,15 +17,8 @@ type Scene = sceneModule.Scene
 
 --- A lazy scan in the engine's `_jessqlIter` protocol: `next` hands out rows until it returns nil.
 --- It is one of the engine's `Iterator`s that says more: its rows are its own to write, and every
---- flag the engine leaves optional is set. It is declared whole because Luau cannot call a `next`
---- narrowed by intersecting the two.
-export type Iterator = {
-  _jessqlIter: 'v1',
-  next: () -> Row?,
-  handledWhere: boolean,
-  ordered: boolean,
-  handledConstraints: boolean,
-}
+--- flag the engine leaves optional is set.
+export type Iterator = util.Iterator
 
 export type RecordsProvider = {
   columns: { string },
@@ -33,8 +26,11 @@ export type RecordsProvider = {
   scan: (request: Request) -> ScanResult,
 }
 
+--- `iterate` hands the nodes over one at a time, so a query that needs only so many of them
+--- makes only so many rows.
 export type SceneNodesProvider = {
   columns: { string },
+  iterate: (request: Request) -> Iterator,
   scan: (request: Request) -> ScanResult,
 }
 
@@ -84,22 +80,12 @@ local SceneNodeEqualities: { [string]: util.Kind } = table.freeze {
 
 local function recordIterator(nif: Nif, request: Request): Iterator
   local wanted = util.columns(request)
-  local exactIndex = util.constraint(request, 'index', '=')
   local exactType = util.constraint(request, 'type', '=')
   local exactName = util.constraint(request, 'name', '=')
   local exactDecoded = util.constraint(request, 'decoded', '=')
   local scratch: { [string]: { [string]: unknown } } = {}
-  local handledConstraints = util.equalities(request, RecordEqualities)
-  local handledWhere = request.whereComplete == true and handledConstraints
-  local ordered, descending = util.orderedBy(request, 'index')
-
-  local nextIndex = if descending then nif.count - 1 else 0
-  local step = if descending then -1 else 1
-  local exactPending = type(exactIndex) == 'number' and exactIndex % 1 == 0
-  local exhausted = false
 
   local function build(index: number): Row?
-    if index < 0 or index >= nif.count then return nil end
     local kind = nif:typeOf(index)
     if kind == nil then return nil end
     if type(exactType) == 'string' and kind ~= exactType then return nil end
@@ -135,54 +121,14 @@ local function recordIterator(nif: Nif, request: Request): Iterator
     return row
   end
 
-  local function nextRow(): Row?
-    if exhausted then return nil end
+  local function count(): number return nif.count end
 
-    if exactPending and type(exactIndex) == 'number' then
-      exactPending = false
-      exhausted = true
-      return build(exactIndex)
-    elseif type(exactIndex) == 'number' then
-      exhausted = true
-      return nil
-    end
-
-    while nextIndex >= 0 and nextIndex < nif.count do
-      local index = nextIndex
-      nextIndex += step
-      local row = build(index)
-      if row ~= nil then return row end
-    end
-    exhausted = true
-    return nil
-  end
-
-  return {
-    _jessqlIter = 'v1',
-    next = nextRow,
-    handledWhere = handledWhere,
-    ordered = ordered,
-    handledConstraints = handledConstraints,
-  }
+  return util.numbered(request, util.equalities(request, RecordEqualities), count, build)
 end
 
-local function recordRows(nif: Nif, request: Request): ScanResult
-  local iter = recordIterator(nif, request)
-  local limit = util.limit(request, iter.handledWhere, iter.ordered)
-  local out: { Row } = if limit ~= nil then table.create(math.min(limit, nif.count)) :: { Row } else {}
-  while true do
-    local row = iter.next()
-    if row == nil then break end
-    out[#out + 1] = row
-    if limit ~= nil and #out >= limit then break end
-  end
-  return util.scanResult(out, iter.handledWhere, iter.ordered, limit ~= nil, iter.handledConstraints)
-end
-
-local function nodeRows(scene: Scene, request: Request): ScanResult
+local function nodeIterator(scene: Scene, request: Request): Iterator
   local wanted = util.columns(request)
-  local out: { Row } = {}
-  local exactIndex = util.constraint(request, 'index', '=')
+  local nodes = scene.nodes
   local exactSource = util.constraint(request, 'source', '=')
   local exactType = util.constraint(request, 'record_type', '=')
   local exactName = util.constraint(request, 'name', '=')
@@ -190,22 +136,16 @@ local function nodeRows(scene: Scene, request: Request): ScanResult
   local exactSubtreeEnd = util.constraint(request, 'subtree_end', '=')
   local exactBillboard = util.constraint(request, 'billboard', '=')
   local exactVisibility = util.constraint(request, 'visibility', '=')
-  local handledConstraints = util.equalities(request, SceneNodeEqualities)
-  local handledWhere = request.whereComplete == true and handledConstraints
-  local ordered, descending = util.orderedBy(request, 'index')
-  local limit = util.limit(request, handledWhere, ordered)
-  if limit ~= nil then out = table.create(math.min(limit, #scene.nodes)) :: { Row } end
 
-  local function emit(index: number): boolean
-    local node = scene.nodes[index + 1]
-    if node == nil then return false end
-    if type(exactSource) == 'number' and node.source ~= exactSource then return false end
-    if type(exactType) == 'string' and node.recordType ~= exactType then return false end
-    if type(exactName) == 'string' and node.name ~= exactName then return false end
-    if type(exactParent) == 'number' and node.parent ~= exactParent then return false end
-    if type(exactSubtreeEnd) == 'number' and node.subtreeEnd ~= exactSubtreeEnd then return false end
-    if type(exactBillboard) == 'boolean' and node.billboard ~= exactBillboard then return false end
-    if type(exactVisibility) == 'string' and node.visibility ~= exactVisibility then return false end
+  local function build(index: number): Row?
+    local node = nodes[index + 1]
+    if type(exactSource) == 'number' and node.source ~= exactSource then return nil end
+    if type(exactType) == 'string' and node.recordType ~= exactType then return nil end
+    if type(exactName) == 'string' and node.name ~= exactName then return nil end
+    if type(exactParent) == 'number' and node.parent ~= exactParent then return nil end
+    if type(exactSubtreeEnd) == 'number' and node.subtreeEnd ~= exactSubtreeEnd then return nil end
+    if type(exactBillboard) == 'boolean' and node.billboard ~= exactBillboard then return nil end
+    if type(exactVisibility) == 'string' and node.visibility ~= exactVisibility then return nil end
 
     local row: Row = {}
     if wanted.index then row.index = index end
@@ -230,19 +170,13 @@ local function nodeRows(scene: Scene, request: Request): ScanResult
       if wanted.world_y then row.world_y = translation.y end
       if wanted.world_z then row.world_z = translation.z end
     end
-    out[#out + 1] = row
-    return limit ~= nil and #out >= limit
+
+    return row
   end
 
-  -- No node is at an index that is no whole number.
-  if type(exactIndex) == 'number' then
-    if exactIndex % 1 == 0 then emit(exactIndex) end
-  elseif descending then
-    for index = #scene.nodes - 1, 0, -1 do if emit(index) then break end end
-  else
-    for index = 0, #scene.nodes - 1 do if emit(index) then break end end
-  end
-  return util.scanResult(out, handledWhere, ordered, limit ~= nil, handledConstraints)
+  local function count(): number return #nodes end
+
+  return util.numbered(request, util.equalities(request, SceneNodeEqualities), count, build)
 end
 
 function exports.recordsProvider(nif: Nif): RecordsProvider
@@ -252,19 +186,29 @@ function exports.recordsProvider(nif: Nif): RecordsProvider
       return recordIterator(nif, request)
     end,
     scan = function(request: Request): ScanResult
-      return recordRows(nif, request)
+      return util.drain(recordIterator(nif, request), request, nif.count)
     end,
   }
 end
 
 function exports.sceneNodesProvider(nif: Nif): SceneNodesProvider
   local cached: Scene? = nil
+
+  --- The NIF's scene, built when it is first asked for and kept.
+  local function scene(): Scene
+    local built = cached or sceneModule.build(nif)
+    cached = built
+    return built
+  end
+
   return {
     columns = SceneNodeColumns,
+    iterate = function(request: Request): Iterator
+      return nodeIterator(scene(), request)
+    end,
     scan = function(request: Request): ScanResult
-      local scene = cached or sceneModule.build(nif)
-      cached = scene
-      return nodeRows(scene, request)
+      local built = scene()
+      return util.drain(nodeIterator(built, request), request, #built.nodes)
     end,
   }
 end

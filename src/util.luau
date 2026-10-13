@@ -24,6 +24,18 @@ export type Row = engine.Row
 --- cut short at a limit, which the engine does not read.
 export type ScanResult = engine.ScanResult & { read limited: boolean }
 
+--- A lazy scan in the engine's `_jessqlIter` protocol: `next` hands out rows until it returns nil.
+--- It is one of the engine's `Iterator`s that says more: its rows are its own to write, and every
+--- flag the engine leaves optional is set. It is declared whole because Luau cannot call a `next`
+--- narrowed by intersecting the two.
+export type Iterator = {
+  _jessqlIter: 'v1',
+  next: () -> Row?,
+  handledWhere: boolean,
+  ordered: boolean,
+  handledConstraints: boolean,
+}
+
 function exports.columns(request: Request): { [string]: boolean }
   local out: { [string]: boolean } = {}
   for _, name in request.columns or {} do out[name] = true end
@@ -77,6 +89,83 @@ function exports.limit(request: Request, handledWhere: boolean, ordered: boolean
   if not handledWhere or (request.orderBy and not ordered) then return nil end
 
   return request.limitHint or request.limit
+end
+
+--- A lazy scan of a table whose rows are numbered from 0, as a plugin numbers its records and a
+--- NIF its records and its scene's nodes. `build` makes the row at an index, or nil when the
+--- source or the constraints have none there. `count` is how many indices there are: it is asked
+--- when the scan starts, and again whenever an upward walk reaches the count it had, so a source
+--- that grows under the scan is read to its end. A request for one index is answered with that
+--- row alone, and with none when the index is past the rows or no whole number; any other is
+--- walked in order, from the last index down when it orders by index so.
+function exports.numbered(
+  request: Request,
+  handledConstraints: boolean,
+  count: () -> number,
+  build: (index: number) -> Row?
+): Iterator
+  local exact = exports.constraint(request, 'index', '=')
+  local ordered, descending = exports.orderedBy(request, 'index')
+  local known = count()
+  local position, step = 0, 1
+  local done = false
+
+  --- Whether the walk ends where the indices it started with do: it is of one index, or downward.
+  local bounded = descending
+  if type(exact) == 'number' then
+    bounded = true
+    if exact % 1 == 0 and exact >= 0 and exact < known then
+      position, known = exact, exact + 1
+    else
+      known = 0
+    end
+  elseif descending then
+    position, step = known - 1, -1
+  end
+
+  local function nextRow(): Row?
+    while not done do
+      while position >= 0 and position < known do
+        local index = position
+        position += step
+        local row = build(index)
+        if row then return row end
+      end
+
+      if not bounded then known = count() end
+
+      done = position < 0 or position >= known
+    end
+
+    return nil
+  end
+
+  return {
+    _jessqlIter = 'v1',
+    next = nextRow,
+    handledWhere = request.whereComplete == true and handledConstraints,
+    ordered = ordered,
+    handledConstraints = handledConstraints,
+  }
+end
+
+--- A lazy scan's rows as an eager one's: all of them, or as many as the request says are enough.
+--- `capacity` is how many rows the source could make, so room for a limit's rows is made only as
+--- far as there are rows.
+function exports.drain(iterator: Iterator, request: Request, capacity: number): ScanResult
+  local limit = exports.limit(request, iterator.handledWhere, iterator.ordered)
+  local rows: { Row } = if limit then table.create(math.min(limit, capacity)) else {}
+  local count = 0
+  while true do
+    local row = iterator.next()
+    if not row then break end
+
+    count += 1
+    rows[count] = row
+    if limit and count >= limit then break end
+  end
+
+  return exports.scanResult(rows, iterator.handledWhere, iterator.ordered, limit ~= nil, iterator.handledConstraints)
 end
 
 function exports.hasConstraint(request: Request, column: string): boolean

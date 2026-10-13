@@ -73,6 +73,19 @@ local function column(rows: engine.SourceRows, name: string): { unknown }
   return out
 end
 
+--- Every row an iterator has left.
+local function drain(iterator: nifTables.Iterator): { Row }
+  local rows = {}
+  while true do
+    local row = iterator.next()
+    if not row then break end
+
+    table.insert(rows, row)
+  end
+
+  return rows
+end
+
 --[[ The VFS stand-in ]]
 
 --- A file of the stand-in VFS: its key, where its bytes are, how long it is, the archive it is in
@@ -762,11 +775,49 @@ suite.describe('tes3.records', function()
 
   suite.it('lists its columns', function() expect(provider.columns).toEqual(RecordColumns) end)
 
-  suite.it('hands over every record, with every column', function()
+  suite.it('hands over every record, with every column, at once and one at a time', function()
     local scanned = provider.scan(request(RecordColumns))
     expect(scanned._jessqlScan).toBe 'v1'
     expect(scanned.rows).toEqual(Records)
     expect(claims(scanned)).toBe 'where constraints'
+
+    local iterator = provider.iterate(request(RecordColumns))
+    expect(iterator._jessqlIter).toBe 'v1'
+    expect(claims(iterator)).toBe 'where constraints'
+    expect(iterator.next()).toEqual(Records[1])
+    expect(iterator.next()).toEqual(Records[2])
+    expect(drain(iterator)).toEqual { Records[3], Records[4], Records[5], Records[6], Records[7] }
+    expect(iterator.next()).toBeNil()
+    expect(iterator.next()).toBeNil()
+  end)
+
+  suite.it('reads no further into the plugin than the rows it is asked for', function()
+    local opened = plugin()
+    local read = 0
+    local counting = setmetatable({}, {
+      __index = function(_: unknown, name: string): unknown
+        local method = (opened :: any)[name]
+        if type(method) ~= 'function' then return method end
+
+        return function(_: unknown, ...: unknown): ...unknown
+          if name ~= 'count' then
+            read += 1
+          end
+
+          return method(opened, ...)
+        end
+      end,
+    })
+    local iterator = tes3Tables.provider((counting :: unknown) :: tes3.Plugin).iterate(
+      request({ 'index', 'type' }, { where('type', '=', 'STAT') }, { orderBy = by('index', true) })
+    )
+    expect(read).toBe(0)
+    expect(iterator.next()).toEqual { index = 3, type = 'STAT' }
+    local afterOne = read
+    expect(afterOne > 0).toBe(true)
+    expect(iterator.next()).toEqual { index = 1, type = 'STAT' }
+    expect(read > afterOne).toBe(true)
+    expect(read <= afterOne * 3).toBe(true)
   end)
 
   suite.it('fills only the columns asked for, and none when none are', function()
@@ -788,7 +839,12 @@ suite.describe('tes3.records', function()
 
     for _, outside in { 7, -1, 1e9 } do
       expect(provider.scan(request(RecordColumns, { where('index', '=', outside) })).rows).toEqual {}
+      expect(provider.iterate(request(RecordColumns, { where('index', '=', outside) })).next()).toBeNil()
     end
+
+    local once = provider.iterate(request({ 'index', 'id' }, { where('index', '=', 4) }))
+    expect(once.next()).toEqual { index = 4, id = 'startup' }
+    expect(once.next()).toBeNil()
 
     local other = provider.scan(request(RecordColumns, { where('index', '=', 2), where('type', '=', 'STAT') }))
     expect(other.rows).toEqual {}
@@ -803,6 +859,7 @@ suite.describe('tes3.records', function()
       local scanned = provider.scan(request(RecordColumns, { where('index', '=', between) }))
       expect(scanned.rows).toEqual {}
       expect(claims(scanned)).toBe ''
+      expect(provider.iterate(request(RecordColumns, { where('index', '=', between) })).next()).toBeNil()
     end
 
     local db = sql.new { tes3 = plugin() }
@@ -815,6 +872,7 @@ suite.describe('tes3.records', function()
     local function matching(...: Constraint): { unknown }
       local scanned = provider.scan(request({ 'index' }, { ... }))
       expect(claims(scanned)).toBe 'where constraints'
+      expect(drain(provider.iterate(request({ 'index' }, { ... })))).toEqual(scanned.rows)
       return column(scanned.rows, 'index')
     end
 
@@ -939,6 +997,12 @@ suite.describe('tes3.records', function()
     local falling = provider.scan(request({ 'index' }, { where('type', '=', 'NPC_') }, { orderBy = by('index', true) }))
     expect(column(falling.rows, 'index')).toEqual { 6, 2 }
     expect(claims(falling)).toBe 'where constraints ordered'
+
+    local lazy = provider.iterate(request({ 'index' }, { where('type', '=', 'NPC_') }, { orderBy = by('index', true) }))
+    expect(claims(lazy)).toBe 'where constraints ordered'
+    expect(column(drain(lazy), 'index')).toEqual { 6, 2 }
+    expect(claims(provider.iterate(request({ 'index' }, nil, { orderBy = by 'type' })))).toBe 'where constraints'
+    expect(claims(provider.iterate(request({ 'index' }, nil, { partialWhere = true })))).toBe 'constraints'
 
     local typed = provider.scan(request({ 'index' }, nil, { limitHint = 2, orderBy = by 'type' }))
     expect(#typed.rows).toBe(7)
@@ -1124,19 +1188,6 @@ local function pick(rows: { Row }, indices: { number }, columns: { string }): { 
   end
 
   return out
-end
-
---- Every row an iterator has left.
-local function drain(iterator: nifTables.Iterator): { Row }
-  local rows = {}
-  while true do
-    local row = iterator.next()
-    if not row then break end
-
-    table.insert(rows, row)
-  end
-
-  return rows
 end
 
 suite.describe('nif.records', function()
@@ -1375,11 +1426,19 @@ suite.describe('nif.scene_nodes', function()
 
   suite.it('lists its columns', function() expect(provider.columns).toEqual(NodeColumns) end)
 
-  suite.it('hands over every node, with every column', function()
+  suite.it('hands over every node, with every column, at once and one at a time', function()
     local scanned = provider.scan(request(NodeColumns))
     expect(scanned._jessqlScan).toBe 'v1'
     expect(scanned.rows).toEqual(Nodes)
     expect(claims(scanned)).toBe 'where constraints'
+
+    local iterator = provider.iterate(request(NodeColumns))
+    expect(iterator._jessqlIter).toBe 'v1'
+    expect(claims(iterator)).toBe 'where constraints'
+    expect(iterator.next()).toEqual(Nodes[1])
+    expect(drain(iterator)).toEqual { Nodes[2], Nodes[3], Nodes[4] }
+    expect(iterator.next()).toBeNil()
+    expect(iterator.next()).toBeNil()
   end)
 
   suite.it('fills only the columns asked for, and none when none are', function()
@@ -1398,7 +1457,12 @@ suite.describe('nif.scene_nodes', function()
 
     for _, outside in { 4, -1, 1e9 } do
       expect(provider.scan(request(NodeColumns, { where('index', '=', outside) })).rows).toEqual {}
+      expect(provider.iterate(request(NodeColumns, { where('index', '=', outside) })).next()).toBeNil()
     end
+
+    local once = provider.iterate(request({ 'index', 'name' }, { where('index', '=', 3) }))
+    expect(once.next()).toEqual { index = 3, name = 'Child' }
+    expect(once.next()).toBeNil()
 
     local other = provider.scan(request(NodeColumns, { where('index', '=', 2), where('name', '=', 'Root') }))
     expect(other.rows).toEqual {}
@@ -1409,6 +1473,7 @@ suite.describe('nif.scene_nodes', function()
       local scanned = provider.scan(request(NodeColumns, { where('index', '=', between) }))
       expect(scanned.rows).toEqual {}
       expect(claims(scanned)).toBe ''
+      expect(provider.iterate(request(NodeColumns, { where('index', '=', between) })).next()).toBeNil()
     end
 
     local db = sql.new { nif = file }
@@ -1421,6 +1486,7 @@ suite.describe('nif.scene_nodes', function()
     local function matching(...: Constraint): { unknown }
       local scanned = provider.scan(request({ 'index' }, { ... }))
       expect(claims(scanned)).toBe 'where constraints'
+      expect(drain(provider.iterate(request({ 'index' }, { ... })))).toEqual(scanned.rows)
       return column(scanned.rows, 'index')
     end
 
@@ -1503,6 +1569,12 @@ suite.describe('nif.scene_nodes', function()
     expect(column(falling.rows, 'index')).toEqual { 3, 1 }
     expect(claims(falling)).toBe 'where constraints ordered'
 
+    local lazy = provider.iterate(request({ 'index' }, { where('name', '=', 'Child') }, { orderBy = by('index', true) }))
+    expect(claims(lazy)).toBe 'where constraints ordered'
+    expect(column(drain(lazy), 'index')).toEqual { 3, 1 }
+    expect(claims(provider.iterate(request({ 'index' }, nil, { orderBy = by 'name' })))).toBe 'where constraints'
+    expect(claims(provider.iterate(request({ 'index' }, nil, { partialWhere = true })))).toBe 'constraints'
+
     local named = provider.scan(request({ 'index' }, nil, { limitHint = 2, orderBy = by 'name' }))
     expect(#named.rows).toBe(4)
     expect(claims(named)).toBe 'where constraints'
@@ -1522,6 +1594,7 @@ suite.describe('nif.scene_nodes', function()
   suite.it('builds the scene at the first scan and keeps it', function()
     local lazy = nifTables.sceneNodesProvider(file)
     file:remove(4)
+    expect(#drain(lazy.iterate(request { 'index' }))).toBe(3)
     expect(#lazy.scan(request { 'index' }).rows).toBe(3)
 
     expect(#provider.scan(request { 'index' }).rows).toBe(3)
