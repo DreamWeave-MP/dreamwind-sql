@@ -80,24 +80,25 @@ local SceneNodeEqualities: { [string]: util.Kind } = table.freeze {
 
 local function recordIterator(nif: Nif, request: Request): Iterator
   local wanted = util.columns(request)
-  local exactType = util.constraint(request, 'type', '=')
-  local exactName = util.constraint(request, 'name', '=')
-  local exactDecoded = util.constraint(request, 'decoded', '=')
+  local template = util.template(wanted, RecordColumns)
+  local wantIndex, wantType, wantName, wantDecoded = wanted.index, wanted.type, wanted.name, wanted.decoded
+  local onlyType, onlyName = util.text(request, 'type'), util.text(request, 'name')
+  local onlyDecoded = util.flag(request, 'decoded')
   local scratch: { [string]: { [string]: unknown } } = {}
 
   local function build(index: number): Row?
     local kind = nif:typeOf(index)
-    if kind == nil then return nil end
-    if type(exactType) == 'string' and kind ~= exactType then return nil end
+    if not kind or (onlyType and kind ~= onlyType) then return nil end
 
+    -- Whether a record is decoded is held to false as much as to true.
     local decoded: boolean? = nil
-    if wanted.decoded or type(exactDecoded) == 'boolean' then
+    if wantDecoded or onlyDecoded ~= nil then
       decoded = nif:isDecoded(index)
-      if type(exactDecoded) == 'boolean' and decoded ~= exactDecoded then return nil end
+      if onlyDecoded ~= nil and decoded ~= onlyDecoded then return nil end
     end
 
     local name: string? = nil
-    if wanted.name or type(exactName) == 'string' then
+    if wantName or onlyName then
       -- Which fields a record has depends on its type, so it is read as a table of whatever
       -- it holds, and its name counts only if it is a string.
       local value: { [string]: unknown }? = nil
@@ -110,14 +111,14 @@ local function recordIterator(nif: Nif, request: Request): Iterator
       end
       local candidate = if value then value.name else nil
       if type(candidate) == 'string' then name = candidate end
-      if type(exactName) == 'string' and name ~= exactName then return nil end
+      if onlyName and name ~= onlyName then return nil end
     end
 
-    local row: Row = {}
-    if wanted.index then row.index = index end
-    if wanted.type then row.type = kind end
-    if wanted.name then row.name = name end
-    if wanted.decoded then row.decoded = if decoded ~= nil then decoded else nif:isDecoded(index) end
+    local row = table.clone(template)
+    if wantIndex then row.index = index end
+    if wantType then row.type = kind end
+    if wantName then row.name = name end
+    if wantDecoded then row.decoded = decoded end
     return row
   end
 
@@ -128,47 +129,54 @@ end
 
 local function nodeIterator(scene: Scene, request: Request): Iterator
   local wanted = util.columns(request)
+  local template = util.template(wanted, SceneNodeColumns)
   local nodes = scene.nodes
-  local exactSource = util.constraint(request, 'source', '=')
-  local exactType = util.constraint(request, 'record_type', '=')
-  local exactName = util.constraint(request, 'name', '=')
-  local exactParent = util.constraint(request, 'parent', '=')
-  local exactSubtreeEnd = util.constraint(request, 'subtree_end', '=')
-  local exactBillboard = util.constraint(request, 'billboard', '=')
-  local exactVisibility = util.constraint(request, 'visibility', '=')
+  local wantIndex, wantSource, wantType, wantName = wanted.index, wanted.source, wanted.record_type, wanted.name
+  local wantParent, wantSubtreeEnd = wanted.parent, wanted.subtree_end
+  local wantBillboard, wantVisibility = wanted.billboard, wanted.visibility
+  local wantLocalX, wantLocalY, wantLocalZ = wanted.local_x, wanted.local_y, wanted.local_z
+  local wantWorldX, wantWorldY, wantWorldZ = wanted.world_x, wanted.world_y, wanted.world_z
+  local wantLocal, wantWorld = wantLocalX or wantLocalY or wantLocalZ, wantWorldX or wantWorldY or wantWorldZ
+  local onlySource, onlyParent = util.number(request, 'source'), util.number(request, 'parent')
+  local onlySubtreeEnd = util.number(request, 'subtree_end')
+  local onlyType, onlyName = util.text(request, 'record_type'), util.text(request, 'name')
+  local onlyVisibility = util.text(request, 'visibility')
+  local onlyBillboard = util.flag(request, 'billboard')
 
   local function build(index: number): Row?
     local node = nodes[index + 1]
-    if type(exactSource) == 'number' and node.source ~= exactSource then return nil end
-    if type(exactType) == 'string' and node.recordType ~= exactType then return nil end
-    if type(exactName) == 'string' and node.name ~= exactName then return nil end
-    if type(exactParent) == 'number' and node.parent ~= exactParent then return nil end
-    if type(exactSubtreeEnd) == 'number' and node.subtreeEnd ~= exactSubtreeEnd then return nil end
-    if type(exactBillboard) == 'boolean' and node.billboard ~= exactBillboard then return nil end
-    if type(exactVisibility) == 'string' and node.visibility ~= exactVisibility then return nil end
+    if onlySource and node.source ~= onlySource then return nil end
+    if onlyType and node.recordType ~= onlyType then return nil end
+    if onlyName and node.name ~= onlyName then return nil end
+    if onlyParent and node.parent ~= onlyParent then return nil end
+    if onlySubtreeEnd and node.subtreeEnd ~= onlySubtreeEnd then return nil end
 
-    local row: Row = {}
-    if wanted.index then row.index = index end
-    if wanted.source then row.source = node.source end
-    if wanted.record_type then row.record_type = node.recordType end
-    if wanted.name then row.name = node.name end
-    if wanted.parent then row.parent = node.parent end
-    if wanted.subtree_end then row.subtree_end = node.subtreeEnd end
-    if wanted.billboard then row.billboard = node.billboard end
-    if wanted.visibility then row.visibility = node.visibility end
+    -- Whether a node is a billboard is held to false as much as to true.
+    if onlyBillboard ~= nil and node.billboard ~= onlyBillboard then return nil end
+    if onlyVisibility and node.visibility ~= onlyVisibility then return nil end
 
-    if wanted.local_x or wanted.local_y or wanted.local_z then
+    local row = table.clone(template)
+    if wantIndex then row.index = index end
+    if wantSource then row.source = node.source end
+    if wantType then row.record_type = node.recordType end
+    if wantName then row.name = node.name end
+    if wantParent then row.parent = node.parent end
+    if wantSubtreeEnd then row.subtree_end = node.subtreeEnd end
+    if wantBillboard then row.billboard = node.billboard end
+    if wantVisibility then row.visibility = node.visibility end
+
+    if wantLocal then
       local translation = node['local'][4]
-      if wanted.local_x then row.local_x = translation.x end
-      if wanted.local_y then row.local_y = translation.y end
-      if wanted.local_z then row.local_z = translation.z end
+      if wantLocalX then row.local_x = translation.x end
+      if wantLocalY then row.local_y = translation.y end
+      if wantLocalZ then row.local_z = translation.z end
     end
 
-    if wanted.world_x or wanted.world_y or wanted.world_z then
+    if wantWorld then
       local translation = node.world[4]
-      if wanted.world_x then row.world_x = translation.x end
-      if wanted.world_y then row.world_y = translation.y end
-      if wanted.world_z then row.world_z = translation.z end
+      if wantWorldX then row.world_x = translation.x end
+      if wantWorldY then row.world_y = translation.y end
+      if wantWorldZ then row.world_z = translation.z end
     end
 
     return row

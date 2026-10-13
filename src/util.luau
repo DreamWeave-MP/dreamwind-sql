@@ -42,11 +42,41 @@ function exports.columns(request: Request): { [string]: boolean }
   return out
 end
 
+--- A row for a scan to copy for each row it makes: those of a table's `columns` the request asks
+--- for, each holding false, so that filling a copy never grows it. A scan fills every cell of a
+--- copy; one it fills with nil is a cell the row lacks.
+function exports.template(wanted: { [string]: boolean }, columns: { string }): Row
+  local row: Row = {}
+  for _, name in columns do
+    if wanted[name] then row[name] = false end
+  end
+
+  return row
+end
+
 function exports.constraint(request: Request, column: string, op: string): unknown
   for _, constraint in request.constraints or {} do
     if constraint.column == column and constraint.op == op then return constraint.value end
   end
   return nil
+end
+
+--- The string a request's first `=` on `column` holds it to, when it is one.
+function exports.text(request: Request, column: string): string?
+  local value = exports.constraint(request, column, '=')
+  return if type(value) == 'string' then value else nil
+end
+
+--- The number a request's first `=` on `column` holds it to, when it is one.
+function exports.number(request: Request, column: string): number?
+  local value = exports.constraint(request, column, '=')
+  return if type(value) == 'number' then value else nil
+end
+
+--- The boolean a request's first `=` on `column` holds it to, when it is one.
+function exports.flag(request: Request, column: string): boolean?
+  local value = exports.constraint(request, column, '=')
+  return if type(value) == 'boolean' then value else nil
 end
 
 --- What a column is held equal to: `whole` is a number without a fraction, which is what a row's

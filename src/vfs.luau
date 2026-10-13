@@ -126,24 +126,38 @@ local function pathPlan(request: Request): (string?, string?, boolean, boolean, 
   end
 end
 
-local function makeRow(vfs: Vfs, key: string, wanted: { [string]: boolean }, file: File?): Row?
-  local needsFile = wanted.physical_path or wanted.size or wanted.is_loose or wanted.is_archive
-    or wanted.archive_path or wanted.archive_name
-  if needsFile and not file then
-    file = vfs:getFile(key)
-    if not file then return nil end
+--- What makes a request's rows, and whether a row needs its file: a function of a key, and of
+--- its file when the caller has it, that answers the row, or nil when a column needs the file and
+--- the VFS no longer has one under the key.
+local function rowMaker(vfs: Vfs, request: Request): ((key: string, given: File?) -> Row?, boolean)
+  local wanted = util.columns(request)
+  local template = util.template(wanted, Columns)
+  local wantPath, wantPhysicalPath, wantName, wantStem = wanted.path, wanted.physical_path, wanted.name, wanted.stem
+  local wantSize, wantLoose, wantArchive = wanted.size, wanted.is_loose, wanted.is_archive
+  local wantArchivePath, wantArchiveName = wanted.archive_path, wanted.archive_name
+  local needsFile = wantPhysicalPath or wantSize or wantLoose or wantArchive or wantArchivePath or wantArchiveName
+
+  local function make(key: string, given: File?): Row?
+    local file = given
+    if needsFile and not file then
+      file = vfs:getFile(key)
+      if not file then return nil end
+    end
+
+    local row = table.clone(template)
+    if wantPath then row.path = key end
+    if wantPhysicalPath and file then row.physical_path = file:path() end
+    if wantName then row.name = logicalName(key) end
+    if wantStem then row.stem = logicalStem(key) end
+    if wantSize and file then row.size = file:size() end
+    if wantLoose and file then row.is_loose = file:isLoose() end
+    if wantArchive and file then row.is_archive = file:isArchive() end
+    if wantArchivePath and file then row.archive_path = file:parentArchivePath() end
+    if wantArchiveName and file then row.archive_name = file:parentArchiveName() end
+    return row
   end
-  local row: Row = {}
-  if wanted.path then row.path = key end
-  if wanted.physical_path and file then row.physical_path = file:path() end
-  if wanted.name then row.name = logicalName(key) end
-  if wanted.stem then row.stem = logicalStem(key) end
-  if wanted.size and file then row.size = file:size() end
-  if wanted.is_loose and file then row.is_loose = file:isLoose() end
-  if wanted.is_archive and file then row.is_archive = file:isArchive() end
-  if wanted.archive_path and file then row.archive_path = file:parentArchivePath() end
-  if wanted.archive_name and file then row.archive_name = file:parentArchiveName() end
-  return row
+
+  return make, needsFile == true
 end
 
 --- What a request asks of a VFS: the keys or entries to make rows of, the row each makes (none
@@ -153,13 +167,11 @@ local function plan(
   vfs: Vfs,
   request: Request
 ): ({ string } | { Entry }, (item: string | Entry) -> Row?, boolean, boolean, number?, boolean)
-  local wanted = util.columns(request)
+  local make, needsFile = rowMaker(vfs, request)
   local exact, prefix, handledWhere, handledConstraints, matchesPath = pathPlan(request)
   local ordered, descending = util.orderedBy(request, 'path')
   local limit = util.limit(request, handledWhere, ordered)
   local constraints = request.constraints or {}
-  local needsFile = wanted.physical_path or wanted.size or wanted.is_loose or wanted.is_archive
-    or wanted.archive_path or wanted.archive_name
   local keyOnly = not needsFile
 
   local candidates: { string } | { Entry }
@@ -193,7 +205,7 @@ local function plan(
     local key = if keyOnly then item :: string else (item :: Entry).key
     if not matchesPath(key) then return nil end
 
-    return makeRow(vfs, key, wanted, if keyOnly then nil else (item :: Entry).file)
+    return make(key, if keyOnly then nil else (item :: Entry).file)
   end
 
   return candidates, rowOf, handledWhere, ordered, limit, handledConstraints
@@ -266,7 +278,7 @@ function exports.provider(vfs: Vfs): Provider
   local function lookup(column: string, value: unknown, request: Request): ScanResult?
     if column ~= 'stem' or type(value) ~= 'string' then return nil end
     ensureStemIndex()
-    local wanted = util.columns(request)
+    local make = rowMaker(vfs, request)
     local _, _, handledWhere, handledConstraints, matchesPath = pathPlan(request)
     local out: { Row } = {}
     local first = stemFirst[value]
@@ -275,12 +287,12 @@ function exports.provider(vfs: Vfs): Provider
       if bucket ~= nil then
         for _, key in bucket do
           if matchesPath(key) then
-            local row = makeRow(vfs, key, wanted, nil)
+            local row = make(key, nil)
             if row ~= nil then out[#out+1] = row end
           end
         end
       elseif matchesPath(first) then
-        local row = makeRow(vfs, first, wanted, nil)
+        local row = make(first, nil)
         if row ~= nil then out[1] = row end
       end
     end

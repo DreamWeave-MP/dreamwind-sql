@@ -47,55 +47,56 @@ local Equalities: { [string]: util.Kind } = table.freeze {
 
 local function recordIterator(plugin: Plugin, request: Request): Iterator
   local wanted = util.columns(request)
-  local exactType = util.constraint(request, 'type', '=')
-  local exactId = util.constraint(request, 'id', '=')
-  local exactFlags = util.constraint(request, 'flags', '=')
-  local exactSize = util.constraint(request, 'size', '=')
-  local exactDirty = util.constraint(request, 'dirty', '=')
-  local exactPartial = util.constraint(request, 'partial', '=')
+  local template = util.template(wanted, Columns)
+  local wantIndex, wantType, wantId, wantFlags = wanted.index, wanted.type, wanted.id, wanted.flags
+  local wantSize, wantDirty, wantPartial = wanted.size, wanted.dirty, wanted.partial
+  local onlyType, onlyId = util.text(request, 'type'), util.text(request, 'id')
+  local onlyFlags, onlySize = util.number(request, 'flags'), util.number(request, 'size')
+  local onlyDirty, onlyPartial = util.flag(request, 'dirty'), util.flag(request, 'partial')
 
   local function build(index: number): Row?
     local tag = plugin:tag(index)
-    if type(exactType) == 'string' and tag ~= exactType then return nil end
+    if onlyType and tag ~= onlyType then return nil end
 
     local id: string? = nil
-    if wanted.id or type(exactId) == 'string' then
+    if wantId or onlyId then
       id = tes3.records.id(plugin, index)
-      if type(exactId) == 'string' and id ~= exactId then return nil end
+      if onlyId and id ~= onlyId then return nil end
     end
 
     local flags: number? = nil
-    if wanted.flags or type(exactFlags) == 'number' then
+    if wantFlags or onlyFlags then
       flags = plugin:flags(index)
-      if type(exactFlags) == 'number' and flags ~= exactFlags then return nil end
+      if onlyFlags and flags ~= onlyFlags then return nil end
     end
 
     local size: number? = nil
-    if wanted.size or type(exactSize) == 'number' then
+    if wantSize or onlySize then
       size = plugin:size(index)
-      if type(exactSize) == 'number' and size ~= exactSize then return nil end
+      if onlySize and size ~= onlySize then return nil end
     end
 
+    -- Whether a record is dirty or in part is held to false as much as to true.
     local dirty: boolean? = nil
-    if wanted.dirty or type(exactDirty) == 'boolean' then
+    if wantDirty or onlyDirty ~= nil then
       dirty = plugin:isDirty(index)
-      if type(exactDirty) == 'boolean' and dirty ~= exactDirty then return nil end
+      if onlyDirty ~= nil and dirty ~= onlyDirty then return nil end
     end
 
     local partial: boolean? = nil
-    if wanted.partial or type(exactPartial) == 'boolean' then
+    if wantPartial or onlyPartial ~= nil then
       partial = plugin:isPartial(index)
-      if type(exactPartial) == 'boolean' and partial ~= exactPartial then return nil end
+      if onlyPartial ~= nil and partial ~= onlyPartial then return nil end
     end
 
-    local row: Row = {}
-    if wanted.index then row.index = index end
-    if wanted.type then row.type = tag end
-    if wanted.id then row.id = id end
-    if wanted.flags then row.flags = flags end
-    if wanted.size then row.size = size end
-    if wanted.dirty then row.dirty = dirty end
-    if wanted.partial then row.partial = partial end
+    local row = table.clone(template)
+    if wantIndex then row.index = index end
+    if wantType then row.type = tag end
+    if wantId then row.id = id end
+    if wantFlags then row.flags = flags end
+    if wantSize then row.size = size end
+    if wantDirty then row.dirty = dirty end
+    if wantPartial then row.partial = partial end
     return row
   end
 
