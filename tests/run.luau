@@ -1074,6 +1074,48 @@ suite.describe('tes3.records', function()
     expect(db:query('SELECT index FROM tes3.records WHERE type = \'STA\' AND id = \'rock\'').rows).toEqual {}
   end)
 
+  suite.it('holds an id to the text it reads as, whatever bytes spell it', function()
+    local function ids(opened: tes3.Plugin, id: string, columns: { string }?): { Row }
+      return tes3Tables.provider(opened).scan(request(columns or { 'index' }, { where('id', '=', id) })).rows
+    end
+
+    local opened = plugin()
+    expect(ids(opened, 'startup', { 'index', 'type', 'id' })).toEqual { { index = 4, type = 'SCPT', id = 'startup' } }
+    expect(ids(opened, 'fargoth', { 'id', 'size' })).toEqual { { id = 'fargoth', size = 16 } }
+
+    for _, near in { 'fargot', 'fargoth ', 'fargoth\0', 'fargotH', 'targoth', 'roc\0', '\0', 'startup\0\0' } do
+      expect(ids(opened, near)).toEqual {}
+    end
+
+    -- A byte past ASCII reads as its character in the plugin's code page, here Windows-1252.
+    local accented = tes3.open(
+      record('STAT', subrecord('NAME', 'caf\233\0'))
+        .. record('STAT', subrecord('NAME', 'cafe\0'))
+        .. record('STAT', subrecord('NAME', 'caf\0\233\0'))
+        .. record('STAT', subrecord('NAME', ''))
+        .. record('STAT', subrecord('DATA', 'cafe\0'))
+    )
+    expect(ids(accented, 'caf\u{e9}', { 'index', 'id' })).toEqual { { index = 0, id = 'caf\u{e9}' } }
+    expect(ids(accented, 'caf\233')).toEqual {}
+    expect(ids(accented, 'cafe')).toEqual { { index = 1 } }
+    expect(ids(accented, 'caf')).toEqual { { index = 2 } }
+    expect(ids(accented, '', { 'index', 'id' })).toEqual { { index = 3, id = '' } }
+
+    -- A save's ids are typed: a string after its kind byte, or an exterior cell's grid.
+    local save = tes3.open(
+      record('NPC_', subrecord('NAME', '\2rock'))
+        .. record('CELL', subrecord('NAME', '\6' .. string.pack('<i4i4', -2, -9)))
+        .. record('STAT', subrecord('NAME', '#-2 -9\0')),
+      { profile = 'omwsave' }
+    )
+    expect(ids(save, 'rock', { 'index', 'id' })).toEqual { { index = 0, id = 'rock' } }
+    expect(ids(save, '\2rock')).toEqual {}
+    expect(ids(save, '#-2 -9', { 'index', 'type' })).toEqual {
+      { index = 1, type = 'CELL' },
+      { index = 2, type = 'STAT' },
+    }
+  end)
+
   suite.it('reads an id only where one is asked for or compared', function()
     local scanned = provider.scan(request({ 'type', 'id' }, { where('type', '=', 'SCPT') }))
     expect(scanned.rows).toEqual { { type = 'SCPT', id = 'startup' } }
