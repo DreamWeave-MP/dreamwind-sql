@@ -827,6 +827,56 @@ for _, lazy in { false, true } do
       expect(gone.rows).toEqual {}
     end)
 
+    suite.it('answers each lookup by what its request says when it is made', function()
+      local function rocks(asked: Request): ({ Row }, string)
+        local found = provider.lookup('stem', 'rock', asked)
+        assert(found)
+        return found.rows, claims(found)
+      end
+
+      local all = { 'meshes/x/rock.nif', 'meshes/y/rock.kf', 'meshes/y/rock.nif' }
+      local under = { 'meshes/y/rock.kf', 'meshes/y/rock.nif' }
+      local asked = request({ 'path' }, { where('path', 'LIKE', 'meshes/%') })
+      expect((rocks(asked))).toEqual(fileRows(all, { 'path' }))
+      expect((rocks(asked))).toEqual(fileRows(all, { 'path' }))
+
+      asked.columns[1] = 'name'
+      expect((rocks(asked))).toEqual(fileRows(all, { 'name' }))
+      table.insert(asked.columns, 'size')
+      expect((rocks(asked))).toEqual(fileRows(all, { 'name', 'size' }))
+      table.remove(asked.columns, 1)
+      expect((rocks(asked))).toEqual(fileRows(all, { 'size' }))
+      asked.columns = { 'path', 'stem' }
+      expect((rocks(asked))).toEqual(fileRows(all, { 'path', 'stem' }))
+
+      asked.constraints[1].value = 'meshes/y/%'
+      expect((rocks(asked))).toEqual(fileRows(under, { 'path', 'stem' }))
+      asked.constraints[1].op = '='
+      expect((rocks(asked))).toEqual {}
+      asked.constraints[1].op = 'LIKE'
+      table.insert(asked.constraints, where('path', '=', 'meshes/y/rock.kf'))
+      expect((rocks(asked))).toEqual(fileRows({ 'meshes/y/rock.kf' }, { 'path', 'stem' }))
+      asked.constraints[2].column = 'size'
+      expect(select(2, rocks(asked))).toBe ''
+      expect((rocks(asked))).toEqual(fileRows(under, { 'path', 'stem' }))
+      table.remove(asked.constraints)
+      expect(select(2, rocks(asked))).toBe 'where constraints'
+      asked.whereComplete = false
+      expect(select(2, rocks(asked))).toBe 'constraints'
+      asked.constraints = {}
+      expect((rocks(asked))).toEqual(fileRows(all, { 'path', 'stem' }))
+
+      local again = request({ 'path', 'stem' }, {}, { partialWhere = true })
+      expect((rocks(again))).toEqual(fileRows(all, { 'path', 'stem' }))
+      expect(select(2, rocks(again))).toBe 'constraints'
+
+      local other = vfsTables.provider(stand(lazy).vfs)
+      local elsewhere = other.lookup('stem', 'tree', request { 'size' })
+      assert(elsewhere)
+      expect(elsewhere.rows).toEqual { { size = 200 } }
+      expect((rocks(again))).toEqual(fileRows(all, { 'path', 'stem' }))
+    end)
+
     suite.it('looks rows up by stem and by nothing else', function()
       expect(provider.lookup('path', 'readme', request { 'path' })).toBeNil()
       expect(provider.lookup('name', 'readme', request { 'path' })).toBeNil()
