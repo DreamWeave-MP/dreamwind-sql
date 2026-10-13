@@ -37,26 +37,16 @@ local function matchingIndices(request: Request): { number }?
   return nil
 end
 
-local function supportedConstraints(request: Request): boolean
-  if util.repeatsColumn(request) then return false end
-
-  for _, constraint in request.constraints or {} do
-    if constraint.op ~= '=' then return false end
-
-    if constraint.column == 'index' then
-      if type(constraint.value) ~= 'number' or constraint.value % 1 ~= 0 then return false end
-    elseif constraint.column == 'flags' or constraint.column == 'size' then
-      if type(constraint.value) ~= 'number' then return false end
-    elseif constraint.column == 'type' or constraint.column == 'id' then
-      if type(constraint.value) ~= 'string' then return false end
-    elseif constraint.column == 'dirty' or constraint.column == 'partial' then
-      if type(constraint.value) ~= 'boolean' then return false end
-    else
-      return false
-    end
-  end
-  return true
-end
+--- What a scan holds a record to: each of these columns, equal to a value of its kind.
+local Equalities: { [string]: util.Kind } = table.freeze {
+  index = 'whole',
+  type = 'string',
+  id = 'string',
+  flags = 'number',
+  size = 'number',
+  dirty = 'boolean',
+  partial = 'boolean',
+}
 
 local function rowsFor(plugin: Plugin, request: Request): ScanResult
   local wanted = util.columns(request)
@@ -69,17 +59,10 @@ local function rowsFor(plugin: Plugin, request: Request): ScanResult
   local exactSize = util.constraint(request, 'size', '=')
   local exactDirty = util.constraint(request, 'dirty', '=')
   local exactPartial = util.constraint(request, 'partial', '=')
-  local handledConstraints = supportedConstraints(request)
+  local handledConstraints = util.equalities(request, Equalities)
   local handledWhere = request.whereComplete == true and handledConstraints
-
-  local ordered = false
-  local descending = false
-  local orderBy = request.orderBy
-  if orderBy ~= nil and #orderBy == 1 and orderBy[1].column == 'index' then
-    ordered = true
-    descending = orderBy[1].desc == true
-  end
-  local limit = if handledWhere and (orderBy == nil or ordered) then request.limitHint or request.limit else nil
+  local ordered, descending = util.orderedBy(request, 'index')
+  local limit = util.limit(request, handledWhere, ordered)
   if limit ~= nil then out = table.create(math.min(limit, count)) :: { Row } end
 
   local function emit(index: number): boolean

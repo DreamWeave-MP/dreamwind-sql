@@ -62,24 +62,25 @@ local SceneNodeColumns = table.freeze {
   'world_z',
 }
 
-local function supportedRecordConstraints(request: Request): boolean
-  if util.repeatsColumn(request) then return false end
+--- What a scan holds a record to: each of these columns, equal to a value of its kind.
+local RecordEqualities: { [string]: util.Kind } = table.freeze {
+  index = 'whole',
+  type = 'string',
+  name = 'string',
+  decoded = 'boolean',
+}
 
-  for _, constraint in request.constraints or {} do
-    if constraint.op ~= '=' then return false end
-
-    if constraint.column == 'index' then
-      if type(constraint.value) ~= 'number' or constraint.value % 1 ~= 0 then return false end
-    elseif constraint.column == 'type' or constraint.column == 'name' then
-      if type(constraint.value) ~= 'string' then return false end
-    elseif constraint.column == 'decoded' then
-      if type(constraint.value) ~= 'boolean' then return false end
-    else
-      return false
-    end
-  end
-  return true
-end
+--- What a scan holds a scene node to.
+local SceneNodeEqualities: { [string]: util.Kind } = table.freeze {
+  index = 'whole',
+  source = 'number',
+  record_type = 'string',
+  name = 'string',
+  parent = 'number',
+  subtree_end = 'number',
+  billboard = 'boolean',
+  visibility = 'string',
+}
 
 local function recordIterator(nif: Nif, request: Request): Iterator
   local wanted = util.columns(request)
@@ -88,16 +89,9 @@ local function recordIterator(nif: Nif, request: Request): Iterator
   local exactName = util.constraint(request, 'name', '=')
   local exactDecoded = util.constraint(request, 'decoded', '=')
   local scratch: { [string]: { [string]: unknown } } = {}
-  local handledConstraints = supportedRecordConstraints(request)
+  local handledConstraints = util.equalities(request, RecordEqualities)
   local handledWhere = request.whereComplete == true and handledConstraints
-
-  local ordered = false
-  local descending = false
-  local orderBy = request.orderBy
-  if orderBy ~= nil and #orderBy == 1 and orderBy[1].column == 'index' then
-    ordered = true
-    descending = orderBy[1].desc == true
-  end
+  local ordered, descending = util.orderedBy(request, 'index')
 
   local nextIndex = if descending then nif.count - 1 else 0
   local step = if descending then -1 else 1
@@ -174,8 +168,7 @@ end
 
 local function recordRows(nif: Nif, request: Request): ScanResult
   local iter = recordIterator(nif, request)
-  local orderBy = request.orderBy
-  local limit = if iter.handledWhere and (orderBy == nil or iter.ordered) then request.limitHint or request.limit else nil
+  local limit = util.limit(request, iter.handledWhere, iter.ordered)
   local out: { Row } = if limit ~= nil then table.create(math.min(limit, nif.count)) :: { Row } else {}
   while true do
     local row = iter.next()
@@ -184,27 +177,6 @@ local function recordRows(nif: Nif, request: Request): ScanResult
     if limit ~= nil and #out >= limit then break end
   end
   return util.scanResult(out, iter.handledWhere, iter.ordered, limit ~= nil, iter.handledConstraints)
-end
-
-local function supportedSceneConstraints(request: Request): boolean
-  if util.repeatsColumn(request) then return false end
-
-  for _, constraint in request.constraints or {} do
-    if constraint.op ~= '=' then return false end
-
-    if constraint.column == 'index' then
-      if type(constraint.value) ~= 'number' or constraint.value % 1 ~= 0 then return false end
-    elseif constraint.column == 'source' or constraint.column == 'parent' or constraint.column == 'subtree_end' then
-      if type(constraint.value) ~= 'number' then return false end
-    elseif constraint.column == 'record_type' or constraint.column == 'name' or constraint.column == 'visibility' then
-      if type(constraint.value) ~= 'string' then return false end
-    elseif constraint.column == 'billboard' then
-      if type(constraint.value) ~= 'boolean' then return false end
-    else
-      return false
-    end
-  end
-  return true
 end
 
 local function nodeRows(scene: Scene, request: Request): ScanResult
@@ -218,17 +190,10 @@ local function nodeRows(scene: Scene, request: Request): ScanResult
   local exactSubtreeEnd = util.constraint(request, 'subtree_end', '=')
   local exactBillboard = util.constraint(request, 'billboard', '=')
   local exactVisibility = util.constraint(request, 'visibility', '=')
-  local handledConstraints = supportedSceneConstraints(request)
+  local handledConstraints = util.equalities(request, SceneNodeEqualities)
   local handledWhere = request.whereComplete == true and handledConstraints
-
-  local ordered = false
-  local descending = false
-  local orderBy = request.orderBy
-  if orderBy ~= nil and #orderBy == 1 and orderBy[1].column == 'index' then
-    ordered = true
-    descending = orderBy[1].desc == true
-  end
-  local limit = if handledWhere and (orderBy == nil or ordered) then request.limitHint or request.limit else nil
+  local ordered, descending = util.orderedBy(request, 'index')
+  local limit = util.limit(request, handledWhere, ordered)
   if limit ~= nil then out = table.create(math.min(limit, #scene.nodes)) :: { Row } end
 
   local function emit(index: number): boolean

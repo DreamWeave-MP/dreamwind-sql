@@ -142,17 +142,8 @@ end
 local function rowsFor(vfs: Vfs, request: Request): ScanResult
   local wanted = util.columns(request)
   local exact, prefix, handledWhere, handledConstraints, matchesPath = pathPlan(request)
-
-  local ordered = false
-  local descending = false
-  local orderBy = request.orderBy
-  if orderBy ~= nil and #orderBy == 1 and orderBy[1].column == 'path' then
-    ordered = true
-    descending = orderBy[1].desc == true
-  end
-
-  local canLimit = handledWhere and (orderBy == nil or ordered)
-  local limit = if canLimit then request.limitHint or request.limit else nil
+  local ordered, descending = util.orderedBy(request, 'path')
+  local limit = util.limit(request, handledWhere, ordered)
   local constraints = request.constraints or {}
   local needsFile = wanted.physical_path or wanted.size or wanted.is_loose or wanted.is_archive
     or wanted.archive_path or wanted.archive_name

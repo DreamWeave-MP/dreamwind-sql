@@ -37,17 +37,46 @@ function exports.constraint(request: Request, column: string, op: string): unkno
   return nil
 end
 
---- Whether two of a request's constraints are on one column. A scan that reads one constraint
---- for each column holds its rows to the first alone, so such a WHERE is the engine's to apply.
-function exports.repeatsColumn(request: Request): boolean
+--- What a column is held equal to: `whole` is a number without a fraction, which is what a row's
+--- index is.
+export type Kind = 'number' | 'whole' | 'string' | 'boolean'
+
+--- Whether every constraint of a request is one a scan applies in full: a column of `kinds` held
+--- equal to a value of its kind, and no column twice. A scan reads one constraint for each column
+--- and holds its rows to the first alone, so a WHERE with two on one is the engine's to apply.
+function exports.equalities(request: Request, kinds: { [string]: Kind }): boolean
   local seen: { [string]: boolean } = {}
   for _, constraint in request.constraints or {} do
-    if seen[constraint.column] then return true end
+    local kind, value = kinds[constraint.column], constraint.value
+    if constraint.op ~= '=' or not kind or seen[constraint.column] then return false end
+
+    if kind == 'whole' then
+      if type(value) ~= 'number' or value % 1 ~= 0 then return false end
+    elseif type(value) ~= kind then
+      return false
+    end
 
     seen[constraint.column] = true
   end
 
-  return false
+  return true
+end
+
+--- Whether a request orders by `column` alone, and if so whether downward. A scan whose rows
+--- come in that order says so, and only then may it stop at the request's limit.
+function exports.orderedBy(request: Request, column: string): (boolean, boolean)
+  local orderBy = request.orderBy
+  if not orderBy or #orderBy ~= 1 or orderBy[1].column ~= column then return false, false end
+
+  return true, orderBy[1].desc == true
+end
+
+--- How many rows are enough for a request, or nil when a scan must hand over every one: it may
+--- stop only when the whole WHERE is its own and its rows are in whatever order was asked for.
+function exports.limit(request: Request, handledWhere: boolean, ordered: boolean): number?
+  if not handledWhere or (request.orderBy and not ordered) then return nil end
+
+  return request.limitHint or request.limit
 end
 
 function exports.hasConstraint(request: Request, column: string): boolean
