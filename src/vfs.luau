@@ -5,6 +5,9 @@ local util = require('./util')
 
 local exports = {}
 
+--- A lazy scan, as `iterate` hands one out.
+export type Iterator = util.Iterator
+
 type Database = util.Database
 type Request = util.Request
 type Row = util.Row
@@ -24,7 +27,8 @@ type File = {
 type Entry = { key: string, file: File }
 
 --- The VFS a `vfs.files` table reads. This package does not depend on the vfs package, so this is
---- the part of its VFS the adapter calls.
+--- the part of its VFS the adapter calls. A list it hands back is walked with a `for` by a scan
+--- and a lookup, and read by its length and by index, one entry at a time, by `iterate`.
 export type Vfs = {
   revision: (self: Vfs) -> number,
   contains: (self: Vfs, path: string) -> boolean,
@@ -35,9 +39,12 @@ export type Vfs = {
   pathsStartingWith: (self: Vfs, prefix: string, limit: number?, descending: boolean?) -> { Entry },
 }
 
+--- `iterate` hands the files over one at a time, so a query that needs only so many of them asks
+--- the VFS for only so many.
 export type Provider = {
   columns: { string },
   indexes: { [string]: boolean },
+  iterate: (request: Request) -> Iterator,
   scan: (request: Request) -> ScanResult,
   lookup: (column: string, value: unknown, request: Request) -> ScanResult?,
 }
@@ -139,7 +146,13 @@ local function makeRow(vfs: Vfs, key: string, wanted: { [string]: boolean }, fil
   return row
 end
 
-local function rowsFor(vfs: Vfs, request: Request): ScanResult
+--- What a request asks of a VFS: the keys or entries to make rows of, the row each makes (none
+--- when its path fails a constraint or its file is gone), whether the whole WHERE and the order
+--- asked for are kept, how many rows are enough, and whether every constraint is applied.
+local function plan(
+  vfs: Vfs,
+  request: Request
+): ({ string } | { Entry }, (item: string | Entry) -> Row?, boolean, boolean, number?, boolean)
   local wanted = util.columns(request)
   local exact, prefix, handledWhere, handledConstraints, matchesPath = pathPlan(request)
   local ordered, descending = util.orderedBy(request, 'path')
@@ -175,21 +188,56 @@ local function rowsFor(vfs: Vfs, request: Request): ScanResult
     candidates = if keyOnly then vfs:keys() else vfs:entries()
   end
 
-  -- Room for the rows a limit allows, as far as there are candidates to make them of.
-  local out: { Row } = if limit ~= nil then table.create(math.min(limit, #candidates)) :: { Row } else {}
-
   -- `keyOnly` chose what the candidates are: keys, or entries that carry their file.
-  local function emit(item: string | Entry): boolean
+  local function rowOf(item: string | Entry): Row?
     local key = if keyOnly then item :: string else (item :: Entry).key
-    if not matchesPath(key) then return false end
-    local row = makeRow(vfs, key, wanted, if keyOnly then nil else (item :: Entry).file)
-    if row == nil then return false end
-    out[#out + 1] = row
-    return limit ~= nil and #out >= limit
+    if not matchesPath(key) then return nil end
+
+    return makeRow(vfs, key, wanted, if keyOnly then nil else (item :: Entry).file)
   end
 
-  for _, item in candidates do if emit(item) then break end end
+  return candidates, rowOf, handledWhere, ordered, limit, handledConstraints
+end
+
+local function rowsFor(vfs: Vfs, request: Request): ScanResult
+  local candidates, rowOf, handledWhere, ordered, limit, handledConstraints = plan(vfs, request)
+
+  -- Room for the rows a limit allows, as far as there are candidates to make them of.
+  local out: { Row } = if limit then table.create(math.min(limit, #candidates)) else {}
+  local count = 0
+  for _, item in candidates do
+    local row = rowOf(item)
+    if not row then continue end
+
+    count += 1
+    out[count] = row
+    if limit and count >= limit then break end
+  end
+
   return util.scanResult(out, handledWhere, ordered, limit ~= nil, handledConstraints)
+end
+
+local function fileIterator(vfs: Vfs, request: Request): Iterator
+  local candidates, rowOf, handledWhere, ordered, _, handledConstraints = plan(vfs, request)
+  local position, count = 0, #candidates
+
+  local function nextRow(): Row?
+    while position < count do
+      position += 1
+      local row = rowOf(candidates[position])
+      if row then return row end
+    end
+
+    return nil
+  end
+
+  return {
+    _jessqlIter = 'v1',
+    next = nextRow,
+    handledWhere = handledWhere,
+    ordered = ordered,
+    handledConstraints = handledConstraints,
+  }
 end
 
 function exports.provider(vfs: Vfs): Provider
@@ -242,6 +290,9 @@ function exports.provider(vfs: Vfs): Provider
   return {
     columns = Columns,
     indexes = { stem=true },
+    iterate = function(request: Request): Iterator
+      return fileIterator(vfs, request)
+    end,
     scan = function(request: Request): ScanResult
       return rowsFor(vfs, request)
     end,

@@ -232,12 +232,15 @@ local function allKeys(): { string }
 end
 
 --- A list as the vfs package hands most of its own out: an empty table whose rows are made when
---- they are read, by index or by a generic `for`.
-local function view<Item>(items: { Item }): { Item }
+--- they are read, by index or by a generic `for`. `read` is told of each row made.
+local function view<Item>(items: { Item }, read: () -> ()): { Item }
   local meta = {
     __len = function(): number return #items end,
     __index = function(_: unknown, key: unknown): Item?
-      return if type(key) == 'number' then items[key] else nil
+      if type(key) ~= 'number' or not items[key] then return nil end
+
+      read()
+      return items[key]
     end,
 
     __iter = function(): () -> (number?, Item?)
@@ -246,7 +249,23 @@ local function view<Item>(items: { Item }): { Item }
         if index >= #items then return nil, nil end
 
         index += 1
+        read()
         return index, items[index]
+      end
+    end,
+  }
+
+  return (setmetatable({}, meta) :: unknown) :: { Item }
+end
+
+--- A list that can be walked with a generic `for` and read no other way.
+local function walked<Item>(items: { Item }): { Item }
+  local meta = {
+    __iter = function(): () -> (number?, Item?)
+      local index = 0
+      return function(): (number?, Item?)
+        index += 1
+        return if items[index] ~= nil then index else nil, items[index]
       end
     end,
   }
@@ -258,6 +277,8 @@ type Stand = {
   vfs: vfsTables.Vfs,
   --- Every listing, lookup, and file the provider asked the VFS for, in order.
   calls: { string },
+  --- How many rows of its views have been made.
+  reads: () -> number,
   --- Takes a file away from `getFile`, with its key still listed.
   lose: (key: string) -> (),
   add: (listing: Listing) -> (),
@@ -268,7 +289,7 @@ local function stand(lazy: boolean): Stand
   local listings: { [string]: Listing } = table.clone(ByKey)
   local lost: { [string]: boolean } = {}
   local calls: { string } = {}
-  local revision = 1
+  local revision, reads = 1, 0
 
   local function file(listing: Listing)
     local archive = listing.archive
@@ -307,7 +328,7 @@ local function stand(lazy: boolean): Stand
       table.insert(out, items[index])
     end
 
-    return if lazy then view(out) else out
+    return if lazy then view(out, function() reads += 1 end) else out
   end
 
   local function entries(keys: { string })
@@ -365,6 +386,7 @@ local function stand(lazy: boolean): Stand
   return {
     vfs = (methods :: unknown) :: vfsTables.Vfs,
     calls = calls,
+    reads = function(): number return reads end,
     lose = function(key: string) lost[key] = true end,
     add = function(listing: Listing)
       listings[listing.key] = listing
@@ -394,6 +416,90 @@ for _, lazy in { false, true } do
       expect(scanned.rows).toEqual(fileRows(allKeys(), FileColumns))
       expect(claims(scanned)).toBe 'where constraints'
       expect(files.calls).toEqual { 'entries nil nil' }
+    end)
+
+    suite.it('hands the files over one at a time, as it scans them', function()
+      local iterator = provider.iterate(request(FileColumns))
+      expect(iterator._jessqlIter).toBe 'v1'
+      expect(claims(iterator)).toBe 'where constraints'
+      expect(iterator.next()).toEqual(fileRow(Listings[1], FileColumns))
+      expect(iterator.next()).toEqual(fileRow(Listings[2], FileColumns))
+      expect(#drain(iterator)).toBe(#Listings - 2)
+      expect(iterator.next()).toBeNil()
+      expect(iterator.next()).toBeNil()
+
+      local asked = {
+        request(KeyColumns),
+        request({ 'stem', 'size' }, { where('path', 'LIKE', 'meshes/%') }),
+        request(KeyColumns, { where('path', 'LIKE', 'meshes/%') }, { orderBy = by('path', true) }),
+        request(FileColumns, { where('path', 'LIKE', 'textures/%') }, { limitHint = 2, orderBy = by 'path' }),
+        request(KeyColumns, nil, { limit = 3, limitHint = 3 }),
+        request(FileColumns, nil, { limitHint = 4, orderBy = by('path', true) }),
+        request(KeyColumns, { where('path', '=', 'readme') }),
+        request(FileColumns, { where('path', '=', 'meshes/x/tree.nif') }),
+        request(FileColumns, { where('path', '=', 'meshes/x/none.nif') }),
+        request(KeyColumns, { where('path', '=', 'Readme') }),
+        request(KeyColumns, { where('path', 'LIKE', 'meshes/%'), where('path', 'LIKE', 'meshes/y/%') }),
+        request(KeyColumns, { where('path', 'LIKE', '%rock%') }),
+        request(KeyColumns, { where('size', '=', 100), where('path', 'LIKE', 'icons/%') }),
+        request(KeyColumns, nil, { orderBy = by 'name' }),
+        request({ 'path' }, { where('path', 'LIKE', 'meshes/%') }, { partialWhere = true }),
+        request {},
+      }
+
+      for _, each in asked do
+        local scanned, lazily = provider.scan(each), provider.iterate(each)
+        expect(lazily.handledWhere).toBe(scanned.handledWhere)
+        expect(lazily.handledConstraints).toBe(scanned.handledConstraints)
+        expect(lazily.ordered).toBe(scanned.ordered)
+        expect(drain(lazily)).toEqual(scanned.rows)
+      end
+    end)
+
+    suite.it('asks a view for no more rows than it hands over', function()
+      local like = { where('path', 'LIKE', 'meshes/%') }
+      local iterator = provider.iterate(request(FileColumns, like, { orderBy = by('path', true) }))
+      expect(files.reads()).toBe(0)
+      expect(iterator.next()).toEqual(fileRow(ByKey['meshes/y/rock.nif'], FileColumns))
+      expect(iterator.next()).toEqual(fileRow(ByKey['meshes/y/rock.kf'], FileColumns))
+      expect(files.reads()).toBe(if lazy then 2 else 0)
+      expect(files.calls).toEqual { 'pathsStartingWith \'meshes/\' nil true' }
+
+      local db = sql.new { vfs = files.vfs }
+      local paged = db:query [[SELECT path FROM vfs.files WHERE path LIKE 'textures/%' ORDER BY path LIMIT 2]]
+      expect(paged.rows).toEqual { { path = 'textures/.a.b' }, { path = 'textures/.hidden' } }
+      expect(files.reads()).toBe(if lazy then 4 else 0)
+    end)
+
+    suite.it('scans a list that can only be walked', function()
+      local vfs = files.vfs
+      local only = setmetatable({}, {
+        __index = function(_: unknown, name: string): unknown
+          return function(_: unknown, ...: unknown): unknown
+            local listed = (vfs :: any)[name](vfs, ...)
+            if type(listed) ~= 'table' or name == 'getFile' then return listed end
+
+            local items = {}
+            for _, item in listed do
+              table.insert(items, item)
+            end
+
+            return walked(items)
+          end
+        end,
+      })
+      local walking = vfsTables.provider((only :: unknown) :: vfsTables.Vfs)
+      expect(walking.scan(request(FileColumns)).rows).toEqual(fileRows(allKeys(), FileColumns))
+      expect(walking.scan(request(KeyColumns, { where('path', 'LIKE', 'icons/%') })).rows).toEqual(
+        fileRows({ 'icons/a.dds' }, KeyColumns)
+      )
+
+      local limited = walking.scan(request(KeyColumns, nil, { limit = 2, limitHint = 2 }))
+      expect(limited.rows).toEqual(fileRows({ 'a.b', 'icons/a.dds' }, KeyColumns))
+
+      local rocks = walking.lookup('stem', 'rock', request { 'path' })
+      assert(rocks)
+      expect(#rocks.rows).toBe(3)
     end)
 
     suite.it('lists keys alone when no column needs the file', function()
