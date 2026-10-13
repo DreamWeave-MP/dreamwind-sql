@@ -213,6 +213,10 @@ local function plan(
     end
   elseif #constraints == 0 and limit ~= nil then
     candidates = if keyOnly then vfs:keys(limit, descending) else vfs:entries(limit, descending)
+  elseif descending then
+    -- The vfs package lists every key from the end only up to a limit, and in key order without
+    -- one whatever is asked. Its keys under a prefix it lists as asked, and none is not under ''.
+    candidates = if keyOnly then vfs:keysStartingWith('', nil, true) else vfs:pathsStartingWith('', nil, true)
   else
     candidates = if keyOnly then vfs:keys() else vfs:entries()
   end

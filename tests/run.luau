@@ -345,14 +345,16 @@ local function stand(lazy: boolean): Stand
       return if listing and not lost[path] then file(listing) else nil
     end,
 
+    -- As the vfs package lists every key: from the end only up to a limit, and in key order
+    -- without one, whatever is asked.
     keys = function(_: unknown, limit: number?, descending: boolean?)
       called('keys', limit, descending)
-      return page(sorted '', limit, descending)
+      return page(sorted '', limit, limit ~= nil and descending)
     end,
 
     entries = function(_: unknown, limit: number?, descending: boolean?)
       called('entries', limit, descending)
-      return page(entries(sorted ''), limit, descending)
+      return page(entries(sorted ''), limit, limit ~= nil and descending)
     end,
 
     keysStartingWith = function(_: unknown, prefix: string, limit: number?, descending: boolean?)
@@ -721,6 +723,55 @@ for _, lazy in { false, true } do
       local rising = provider.scan(request(KeyColumns, nil, { orderBy = by 'path' }))
       expect(rising.rows).toEqual(fileRows(allKeys(), KeyColumns))
       expect(claims(rising)).toBe 'where constraints ordered'
+    end)
+
+    suite.it('hands every file over from the last path down, with no limit and no prefix to range over', function()
+      local falling = by('path', true)
+      local keys = allKeys()
+      local reversed = [for index in range(#keys, 1, -1) => keys[index]]
+
+      local scanned = provider.scan(request(KeyColumns, nil, { orderBy = falling }))
+      expect(scanned.rows).toEqual(fileRows(reversed, KeyColumns))
+      expect(claims(scanned)).toBe 'where constraints ordered'
+
+      local whole = provider.scan(request(FileColumns, nil, { orderBy = falling }))
+      expect(whole.rows).toEqual(fileRows(reversed, FileColumns))
+      expect(claims(whole)).toBe 'where constraints ordered'
+
+      -- A constraint left to the engine keeps the scan off a limit, and the order is still kept.
+      for _, other in { where('size', '=', 100), where('path', 'LIKE', '%rock%'), where('path', '<', 'm') } do
+        local left = provider.scan(request(KeyColumns, { other }, { limit = 2, limitHint = 2, orderBy = falling }))
+        expect(left.rows).toEqual(fileRows(reversed, KeyColumns))
+        expect(claims(left)).toBe 'ordered'
+      end
+
+      local some = provider.scan(request(FileColumns, nil, { orderBy = falling, partialWhere = true }))
+      expect(some.rows).toEqual(fileRows(reversed, FileColumns))
+      expect(claims(some)).toBe 'constraints ordered'
+
+      for _, columns in { KeyColumns, FileColumns } do
+        local lazily = provider.iterate(request(columns, nil, { orderBy = falling }))
+        expect(claims(lazily)).toBe 'where constraints ordered'
+        expect(drain(lazily)).toEqual(fileRows(reversed, columns))
+      end
+
+      local rising = provider.scan(request(KeyColumns, { where('size', '=', 100) }, { orderBy = by 'path' }))
+      expect(rising.rows).toEqual(fileRows(keys, KeyColumns))
+      expect(claims(rising)).toBe 'ordered'
+
+      local db = sql.new { vfs = files.vfs }
+      expect(column(db:query('SELECT path FROM vfs.files ORDER BY path DESC').rows, 'path')).toEqual(reversed)
+      expect(column(db:query('SELECT path, size FROM vfs.files ORDER BY path DESC').rows, 'path')).toEqual(reversed)
+      expect(db:query('SELECT path FROM vfs.files WHERE size > 9 ORDER BY path DESC LIMIT 2').rows).toEqual {
+        { path = 'textures/trailing.' },
+        { path = 'meshes/y/rock.nif' },
+      }
+
+      expect(db:query('SELECT path FROM vfs.files WHERE name != \'readme\' ORDER BY path DESC LIMIT 3 OFFSET 4').rows).toEqual {
+        { path = 'textures/.a.b' },
+        { path = 'meshes/y/rock.nif' },
+        { path = 'meshes/y/rock.kf' },
+      }
     end)
 
     suite.it('stops at a limit only when the whole WHERE is its own', function()
