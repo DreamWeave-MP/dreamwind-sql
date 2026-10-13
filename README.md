@@ -69,7 +69,7 @@ Yes, this is SQL joining Morrowind's VFS against its NIF records in Luau.
 
 `BENCHMARKS.md` has the numbers, measured on a verified release build, and what each is made of.
 In short, on 50,000 files, 20,001 records, and a 4,096-record NIF: a page of twenty rows from any
-one table takes 15 to 110 µs whatever the `WHERE` the table applies, a bare `COUNT(*)` under a
+one table takes 15 to 120 µs whatever the `WHERE` the table applies, a bare `COUNT(*)` under a
 millisecond, a scan of a whole table 0.2 to 1.1 µs a row, and a stem lookup about 1.2 µs. The
 indexed join of the example above still makes every pair before it keeps twenty (9 ms for 4,032
 NIF records against 50,000 files): JessQL's indexed join stops early only for a query with no
