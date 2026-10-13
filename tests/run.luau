@@ -518,6 +518,34 @@ for _, lazy in { false, true } do
       expect(provider.scan(({} :: unknown) :: Request).rows).toEqual(fileRows(allKeys(), {}))
     end)
 
+    suite.it('names a key by what follows its last slash, and stems the name at its last dot', function()
+      local odd = {
+        { 'd.e/f', 'f', 'f' },
+        { 'd/..', '..', '.' },
+        { 'd/a..b', 'a..b', 'a.' },
+        { 'd/e.f/', '', '' },
+        { 'trail/', '', '' },
+        { '.', '.', '.' },
+        { '..x', '..x', '.' },
+        { 'x.', 'x.', 'x' },
+        { 'no/dots/here', 'here', 'here' },
+        { 'a/b/c.d.e.f', 'c.d.e.f', 'c.d.e' },
+      }
+
+      for _, each in odd do
+        files.add { key = each[1], location = each[1], length = 0, name = each[2], stem = each[3] }
+      end
+
+      for _, each in odd do
+        local scanned = provider.scan(request(KeyColumns, { where('path', '=', each[1]) }))
+        expect(scanned.rows).toEqual { { path = each[1], name = each[2], stem = each[3] } }
+
+        local found = provider.lookup('stem', each[3], request { 'path' })
+        assert(found)
+        expect(found.rows).toContain { path = each[1] }
+      end
+    end)
+
     suite.it('leaves a column it lacks out of its rows', function()
       local scanned = provider.scan(request { 'stem', 'bogus', 'size', 'index' })
       expect(scanned.rows).toEqual(fileRows(allKeys(), { 'stem', 'size' }))
