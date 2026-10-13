@@ -123,15 +123,8 @@ local function pathPlan(request: Request): (string?, string?, boolean, boolean, 
   local matches: ((key: string) -> boolean)? = nil
   if #paths + #prefixes > 0 then
     matches = function(key: string): boolean
-      for _, path in paths do
-        if key ~= path then return false end
-      end
-
-      for _, start in prefixes do
-        if string.sub(key, 1, #start) ~= start then return false end
-      end
-
-      return true
+      return all[for path in paths => key == path]
+        and all[for start in prefixes => string.sub(key, 1, #start) == start]
     end
   end
 
@@ -380,7 +373,7 @@ function exports.provider(vfs: Vfs): Provider
       plan = current
     end
 
-    local make, matchesPath = current.make, current.matchesPath
+    local { make, matchesPath, handledWhere, handledConstraints } = current
     local out: { Row } = {}
     local count = 0
 
@@ -396,7 +389,7 @@ function exports.provider(vfs: Vfs): Provider
       out[count] = row
     end
 
-    return util.scanResult(out, current.handledWhere, false, false, current.handledConstraints)
+    return util.scanResult(out, handledWhere, false, false, handledConstraints)
   end
 
   return {
