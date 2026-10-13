@@ -124,6 +124,17 @@ function exports.limit(request: Request, handledWhere: boolean, ordered: boolean
   return request.limitHint or request.limit
 end
 
+function exports.scanResult(rows: { Row }, handledWhere: boolean, ordered: boolean, limited: boolean, handledConstraints: boolean?): ScanResult
+  return {
+    _jessqlScan = 'v1',
+    rows = rows,
+    handledWhere = handledWhere,
+    ordered = ordered,
+    limited = limited,
+    handledConstraints = handledConstraints == true,
+  }
+end
+
 --- A lazy scan of a table whose rows are numbered from 0, as a plugin numbers its records and a
 --- NIF its records and its scene's nodes. `build` makes the row at an index, or nil when the
 --- source or the constraints have none there. `count` is how many indices there are: it is asked
@@ -202,17 +213,6 @@ function exports.drain(iterator: Iterator, request: Request, capacity: number): 
   end
 
   return exports.scanResult(rows, iterator.handledWhere, iterator.ordered, limit ~= nil, iterator.handledConstraints)
-end
-
-function exports.scanResult(rows: { Row }, handledWhere: boolean, ordered: boolean, limited: boolean, handledConstraints: boolean?): ScanResult
-  return {
-    _jessqlScan = 'v1',
-    rows = rows,
-    handledWhere = handledWhere,
-    ordered = ordered,
-    limited = limited,
-    handledConstraints = handledConstraints == true,
-  }
 end
 
 --- What a LIKE pattern is a prefix of, when it is no more than that: the pattern itself when it
