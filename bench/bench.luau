@@ -422,6 +422,13 @@ do
   ]
 
   query(
+    `vfs query: {FileCount} files counted`,
+    [[SELECT COUNT(*) AS files FROM vfs.files]],
+    { 'files' },
+    { { files = FileCount } }
+  )
+
+  query(
     `vfs query: {FileCount} files, those in archives counted by archive`,
     [[SELECT archive_name, COUNT(*) AS files, SUM(size) AS bytes FROM vfs.files
       WHERE is_archive = true GROUP BY archive_name ORDER BY archive_name]],
@@ -547,6 +554,13 @@ do
     doors
   )
 
+  query(
+    `tes3 query: {RecordCount + 1} records counted`,
+    [[SELECT COUNT(*) AS records FROM tes3.records]],
+    { 'records' },
+    { { records = RecordCount + 1 } }
+  )
+
   local types = table.clone(RecordTypes)
   table.insert(types, 'TES3')
   table.sort(types)
@@ -632,6 +646,13 @@ do
   )
 
   query(
+    `nif query: {NifCount} records counted`,
+    [[SELECT COUNT(*) AS records FROM nif.records]],
+    { 'records' },
+    { { records = NifCount } }
+  )
+
+  query(
     `nif query: {NifCount} records counted by type`,
     [[SELECT type, COUNT(*) AS records FROM nif.records GROUP BY type ORDER BY type]],
     { 'type', 'records' },
@@ -676,6 +697,13 @@ do
 
   scan(`scene scan: {NifCount} nodes, every column`, nodes, request(nodes.columns), scene)
   scan(`scene scan: {NifCount} nodes, their names and parents`, nodes, request { 'index', 'name', 'parent' }, scene)
+
+  query(
+    `scene query: {NifCount} nodes counted`,
+    [[SELECT COUNT(*) AS nodes FROM nif.scene_nodes]],
+    { 'nodes' },
+    { { nodes = NifCount } }
+  )
 
   local branches = [
     for branch in range(1, Branches) => { name = string.format('branch %02d', branch), world_x = branch }
