@@ -204,18 +204,6 @@ function exports.drain(iterator: Iterator, request: Request, capacity: number): 
   return exports.scanResult(rows, iterator.handledWhere, iterator.ordered, limit ~= nil, iterator.handledConstraints)
 end
 
-function exports.hasConstraint(request: Request, column: string): boolean
-  for _, constraint in request.constraints or {} do
-    if constraint.column == column then return true end
-  end
-  return false
-end
-
-function exports.limitReached(out: { Row }, request: Request): boolean
-  local limit = request.limit
-  return limit ~= nil and #out >= limit
-end
-
 function exports.scanResult(rows: { Row }, handledWhere: boolean, ordered: boolean, limited: boolean, handledConstraints: boolean?): ScanResult
   return {
     _jessqlScan = 'v1',
