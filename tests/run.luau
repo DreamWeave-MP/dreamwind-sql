@@ -1918,6 +1918,59 @@ suite.describe('a request that allows volatile rows', function()
   end)
 end)
 
+suite.describe('a count of every row', function()
+  suite.it('is each table\'s to give, and is how many rows a scan of it hands over', function()
+    local records = model()
+    records:remove(3)
+    for _, lazy in { false, true } do
+      local files = stand(lazy)
+      local provider = vfsTables.provider(files.vfs)
+      expect(provider.count()).toBe(#Listings)
+      expect(files.calls).toEqual { 'keys nil nil' }
+      expect(#provider.scan(request {}).rows).toBe(#Listings)
+      files.add { key = 'new', location = 'new', length = 0, name = 'new', stem = 'new' }
+      expect(provider.count()).toBe(#Listings + 1)
+    end
+
+    local counted = {
+      { provider = tes3Tables.provider(plugin()), rows = 7 },
+      { provider = nifTables.recordsProvider(records), rows = 4 },
+      { provider = nifTables.sceneNodesProvider(model()), rows = 4 },
+      { provider = nifTables.recordsProvider(nifModule.new()), rows = 0 },
+      { provider = nifTables.sceneNodesProvider(nifModule.new()), rows = 0 },
+    }
+
+    for _, each in counted do
+      expect(each.provider.count()).toBe(each.rows)
+      expect(#each.provider.scan(request {}).rows).toBe(each.rows)
+    end
+
+    local grown = nifTables.recordsProvider(records)
+    records:insert { type = 'NiNode', name = 'Late' }
+    expect(grown.count()).toBe(5)
+  end)
+
+  suite.it('answers a bare COUNT(*), and nothing more than that', function()
+    local file = model()
+    file:remove(3)
+    local db = sql.new { vfs = stand(true).vfs, tes3 = plugin(), nif = file }
+    local totals = { ['vfs.files'] = #Listings, ['tes3.records'] = 7, ['nif.records'] = 4, ['nif.scene_nodes'] = 4 }
+    for name, total in totals do
+      local plan = db:prepare(`SELECT COUNT(*) AS total FROM {name}`)
+      expect(plan.explain().providerCount).toBe(true)
+      expect(plan.run().rows).toEqual { { total = total } }
+    end
+
+    local some = db:prepare 'SELECT COUNT(*) AS total FROM tes3.records WHERE type = \'STAT\''
+    expect(some.explain().providerCount).toBe(false)
+    expect(some.run().rows).toEqual { { total = 2 } }
+    expect(db:query('SELECT COUNT(*) AS total FROM vfs.files WHERE path LIKE \'meshes/%\'').rows).toEqual { { total = 4 } }
+    expect(db:query('SELECT COUNT(*) AS total FROM nif.records WHERE name = \'Child\'').rows).toEqual { { total = 2 } }
+    expect(db:query('SELECT COUNT(*) AS total FROM nif.scene_nodes WHERE billboard = false').rows).toEqual { { total = 3 } }
+    expect(db:query('SELECT COUNT(id) AS total FROM tes3.records').rows).toEqual { { total = 6 } }
+  end)
+end)
+
 suite.describe('a limit past the rows there are', function()
   local huge = { 100000000, 4000000000, 2 ^ 53 }
 

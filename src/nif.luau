@@ -21,16 +21,19 @@ type Scene = sceneModule.Scene
 --- every time, filled anew, which it does only for a request that allows it.
 export type Iterator = util.Iterator
 
+--- `count` is how many records the NIF holds, which answers a bare COUNT(*).
 export type RecordsProvider = {
   columns: { string },
+  count: () -> number,
   iterate: (request: Request) -> Iterator,
   scan: (request: Request) -> ScanResult,
 }
 
 --- `iterate` hands the nodes over one at a time, so a query that needs only so many of them
---- makes only so many rows.
+--- makes only so many rows; `count` is how many nodes the scene has.
 export type SceneNodesProvider = {
   columns: { string },
+  count: () -> number,
   iterate: (request: Request) -> Iterator,
   scan: (request: Request) -> ScanResult,
 }
@@ -199,6 +202,9 @@ end
 function exports.recordsProvider(nif: Nif): RecordsProvider
   return {
     columns = RecordColumns,
+
+    -- A record that was removed has left its index empty, and is no row.
+    count = function(): number return #[for index in range(0, nif.count - 1) if nif:typeOf(index) => index] end,
     iterate = function(request: Request): Iterator
       return recordIterator(nif, request, request.allowVolatileRows == true)
     end,
@@ -220,6 +226,7 @@ function exports.sceneNodesProvider(nif: Nif): SceneNodesProvider
 
   return {
     columns = SceneNodeColumns,
+    count = function(): number return #scene().nodes end,
     iterate = function(request: Request): Iterator
       return nodeIterator(scene(), request, request.allowVolatileRows == true)
     end,

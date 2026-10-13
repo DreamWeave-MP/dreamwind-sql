@@ -18,9 +18,10 @@ type Row = util.Row
 type ScanResult = util.ScanResult
 
 --- `iterate` hands the records over one at a time, so a query that needs only so many of them
---- reads only so many.
+--- reads only so many; `count` is how many records there are, which answers a bare COUNT(*).
 export type Provider = {
   columns: { string },
+  count: () -> number,
   iterate: (request: Request) -> Iterator,
   scan: (request: Request) -> ScanResult,
 }
@@ -127,6 +128,7 @@ end
 function exports.provider(plugin: Plugin): Provider
   return {
     columns = Columns,
+    count = function(): number return plugin:count() end,
     iterate = function(request: Request): Iterator
       return recordIterator(plugin, request, request.allowVolatileRows == true)
     end,

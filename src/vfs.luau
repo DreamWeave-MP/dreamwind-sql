@@ -40,9 +40,10 @@ export type Vfs = {
 }
 
 --- `iterate` hands the files over one at a time, so a query that needs only so many of them asks
---- the VFS for only so many.
+--- the VFS for only so many; `count` is how many keys the VFS has, which answers a bare COUNT(*).
 export type Provider = {
   columns: { string },
+  count: () -> number,
   indexes: { [string]: boolean },
   iterate: (request: Request) -> Iterator,
   scan: (request: Request) -> ScanResult,
@@ -404,6 +405,17 @@ function exports.provider(vfs: Vfs): Provider
 
   return {
     columns = Columns,
+
+    -- The keys are walked, as a scan walks them: a list need answer nothing but a `for`.
+    count = function(): number
+      local keys = 0
+      for _ in vfs:keys() do
+        keys += 1
+      end
+
+      return keys
+    end,
+
     indexes = { stem = true },
     iterate = function(request: Request): Iterator
       return fileIterator(vfs, request)
