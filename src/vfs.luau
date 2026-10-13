@@ -140,8 +140,12 @@ end
 
 --- What makes a request's rows, and whether a row needs its file: a function of a key, and of
 --- its file when the caller has it, that answers the row, or nil when a column needs the file and
---- the VFS no longer has one under the key.
-local function rowMaker(vfs: Vfs, request: Request): ((key: string, given: File?) -> Row?, boolean)
+--- the VFS no longer has one under the key. `volatile` has it fill one row table for every key.
+local function rowMaker(
+  vfs: Vfs,
+  request: Request,
+  volatile: boolean
+): ((key: string, given: File?) -> Row?, boolean)
   local wanted = util.columns(request)
   local template = util.template(wanted, Columns)
   local wantPath, wantPhysicalPath, wantName, wantStem = wanted.path, wanted.physical_path, wanted.name, wanted.stem
@@ -156,7 +160,7 @@ local function rowMaker(vfs: Vfs, request: Request): ((key: string, given: File?
       if not file then return nil end
     end
 
-    local row = table.clone(template)
+    local row = if volatile then template else table.clone(template)
     if wantPath then row.path = key end
     if wantPhysicalPath and file then row.physical_path = file:path() end
 
@@ -180,11 +184,13 @@ end
 --- What a request asks of a VFS: the keys or entries to make rows of, the row each makes (none
 --- when its path fails a constraint or its file is gone), whether the whole WHERE and the order
 --- asked for are kept, how many rows are enough, and whether every constraint is applied.
+--- `volatile` has every row be one table, filled anew.
 local function plan(
   vfs: Vfs,
-  request: Request
+  request: Request,
+  volatile: boolean
 ): ({ string } | { Entry }, (item: string | Entry) -> Row?, boolean, boolean, number?, boolean)
-  local make, needsFile = rowMaker(vfs, request)
+  local make, needsFile = rowMaker(vfs, request, volatile)
   local exact, prefix, handledWhere, handledConstraints, matchesPath = pathPlan(request)
   local ordered, descending = util.orderedBy(request, 'path')
   local limit = util.limit(request, handledWhere, ordered)
@@ -229,7 +235,7 @@ local function plan(
 end
 
 local function rowsFor(vfs: Vfs, request: Request): ScanResult
-  local candidates, rowOf, handledWhere, ordered, limit, handledConstraints = plan(vfs, request)
+  local candidates, rowOf, handledWhere, ordered, limit, handledConstraints = plan(vfs, request, false)
 
   -- Room for the rows a limit allows, as far as there are candidates to make them of.
   local out: { Row } = if limit then table.create(math.min(limit, #candidates)) else {}
@@ -247,7 +253,8 @@ local function rowsFor(vfs: Vfs, request: Request): ScanResult
 end
 
 local function fileIterator(vfs: Vfs, request: Request): Iterator
-  local candidates, rowOf, handledWhere, ordered, _, handledConstraints = plan(vfs, request)
+  local volatile = request.allowVolatileRows == true
+  local candidates, rowOf, handledWhere, ordered, _, handledConstraints = plan(vfs, request, volatile)
   local position, count = 0, #candidates
 
   local function nextRow(): Row?
@@ -263,6 +270,7 @@ local function fileIterator(vfs: Vfs, request: Request): Iterator
   return {
     _jessqlIter = 'v1',
     next = nextRow,
+    volatileRows = volatile,
     handledWhere = handledWhere,
     ordered = ordered,
     handledConstraints = handledConstraints,
@@ -289,7 +297,7 @@ type LookupPlan = {
 local Empty = table.freeze {}
 
 local function lookupPlan(vfs: Vfs, request: Request): LookupPlan
-  local make = rowMaker(vfs, request)
+  local make = rowMaker(vfs, request, false)
   local _, _, handledWhere, handledConstraints, matchesPath = pathPlan(request)
   local columns: { [unknown]: unknown } = table.clone(request.columns or Empty)
   local constraints: { [unknown]: util.Constraint } = {}

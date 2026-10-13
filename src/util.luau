@@ -26,11 +26,13 @@ export type ScanResult = engine.ScanResult & { read limited: boolean }
 
 --- A lazy scan in the engine's `_jessqlIter` protocol: `next` hands out rows until it returns nil.
 --- It is one of the engine's `Iterator`s that says more: its rows are its own to write, and every
---- flag the engine leaves optional is set. It is declared whole because Luau cannot call a `next`
---- narrowed by intersecting the two.
+--- flag the engine leaves optional is set. `volatileRows` says `next` hands out one row table
+--- every time, filled anew, which it does only for a request that allows it. It is declared whole
+--- because Luau cannot call a `next` narrowed by intersecting the two.
 export type Iterator = {
   _jessqlIter: 'v1',
   next: () -> Row?,
+  volatileRows: boolean,
   handledWhere: boolean,
   ordered: boolean,
   handledConstraints: boolean,
@@ -44,7 +46,8 @@ end
 
 --- A row for a scan to copy for each row it makes: those of a table's `columns` the request asks
 --- for, each holding false, so that filling a copy never grows it. A scan fills every cell of a
---- copy; one it fills with nil is a cell the row lacks.
+--- copy; one it fills with nil is a cell the row lacks. A scan whose rows may be volatile fills
+--- the template itself, over and over.
 function exports.template(wanted: { [string]: boolean }, columns: { string }): Row
   local row: Row = {}
   for _, name in columns do
@@ -127,10 +130,12 @@ end
 --- when the scan starts, and again whenever an upward walk reaches the count it had, so a source
 --- that grows under the scan is read to its end. A request for one index is answered with that
 --- row alone, and with none when the index is past the rows or no whole number; any other is
---- walked in order, from the last index down when it orders by index so.
+--- walked in order, from the last index down when it orders by index so. `volatile` says
+--- whether `build` hands out one row table every time.
 function exports.numbered(
   request: Request,
   handledConstraints: boolean,
+  volatile: boolean,
   count: () -> number,
   build: (index: number) -> Row?
 ): Iterator
@@ -173,6 +178,7 @@ function exports.numbered(
   return {
     _jessqlIter = 'v1',
     next = nextRow,
+    volatileRows = volatile,
     handledWhere = request.whereComplete == true and handledConstraints,
     ordered = ordered,
     handledConstraints = handledConstraints,
@@ -180,8 +186,8 @@ function exports.numbered(
 end
 
 --- A lazy scan's rows as an eager one's: all of them, or as many as the request says are enough.
---- `capacity` is how many rows the source could make, so room for a limit's rows is made only as
---- far as there are rows.
+--- The scan's rows are each a table of their own. `capacity` is how many rows the source could
+--- make, so room for a limit's rows is made only as far as there are rows.
 function exports.drain(iterator: Iterator, request: Request, capacity: number): ScanResult
   local limit = exports.limit(request, iterator.handledWhere, iterator.ordered)
   local rows: { Row } = if limit then table.create(math.min(limit, capacity)) else {}

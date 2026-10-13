@@ -46,7 +46,9 @@ local Equalities: { [string]: util.Kind } = table.freeze {
   partial = 'boolean',
 }
 
-local function recordIterator(plugin: Plugin, request: Request): Iterator
+--- A lazy scan of a plugin's records. `volatile` has it fill one row table for every record,
+--- which only a request that allows it may be answered with.
+local function recordIterator(plugin: Plugin, request: Request, volatile: boolean): Iterator
   local wanted = util.columns(request)
   local template = util.template(wanted, Columns)
   local wantIndex, wantType, wantId, wantFlags = wanted.index, wanted.type, wanted.id, wanted.flags
@@ -106,7 +108,7 @@ local function recordIterator(plugin: Plugin, request: Request): Iterator
       if onlyPartial ~= nil and partial ~= onlyPartial then return nil end
     end
 
-    local row = table.clone(template)
+    local row = if volatile then template else table.clone(template)
     if wantIndex then row.index = index end
     if wantType then row.type = onlyType or plugin:tag(index) end
     if wantId then row.id = id end
@@ -119,17 +121,17 @@ local function recordIterator(plugin: Plugin, request: Request): Iterator
 
   local function count(): number return plugin:count() end
 
-  return util.numbered(request, util.equalities(request, Equalities), count, build)
+  return util.numbered(request, util.equalities(request, Equalities), volatile, count, build)
 end
 
 function exports.provider(plugin: Plugin): Provider
   return {
     columns = Columns,
     iterate = function(request: Request): Iterator
-      return recordIterator(plugin, request)
+      return recordIterator(plugin, request, request.allowVolatileRows == true)
     end,
     scan = function(request: Request): ScanResult
-      return util.drain(recordIterator(plugin, request), request, plugin:count())
+      return util.drain(recordIterator(plugin, request, false), request, plugin:count())
     end,
   }
 end

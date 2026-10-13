@@ -1863,6 +1863,85 @@ suite.describe('nif.scene_nodes', function()
   end)
 end)
 
+suite.describe('a request that allows volatile rows', function()
+  local function allowing(asked: Request): Request
+    asked.allowVolatileRows = true
+    return asked
+  end
+
+  --- Holds an iterator to handing `expected` over in one table, filled anew each time.
+  local function reuses(iterator: nifTables.Iterator, expected: { Row })
+    expect(iterator.volatileRows).toBe(true)
+    local first = iterator.next()
+    expect(first).toEqual(expected[1])
+    for position = 2, #expected do
+      local row = iterator.next()
+      expect(row).toBe(first)
+      expect(row).toEqual(expected[position])
+    end
+
+    expect(iterator.next()).toBeNil()
+  end
+
+  --- Holds rows to being `expected`, each a table of its own.
+  local function apart(rows: engine.SourceRows, expected: { Row })
+    expect(rows).toEqual(expected)
+    local seen: { [engine.SourceRow]: boolean } = {}
+    for _, row in rows do
+      expect(seen[row]).toBeNil()
+      seen[row] = true
+    end
+  end
+
+  suite.it('is handed a plugin\'s records in one row, with the cells of each and no other', function()
+    local provider = tes3Tables.provider(plugin())
+    local falling = { Records[7], Records[6], Records[5], Records[4], Records[3], Records[2], Records[1] }
+    reuses(provider.iterate(allowing(request(RecordColumns, nil, { orderBy = by('index', true) }))), falling)
+    reuses(provider.iterate(allowing(request(RecordColumns, { where('type', '=', 'STAT') }))), records { 1, 3 })
+
+    local kept = provider.iterate(request(RecordColumns))
+    expect(kept.volatileRows).toBe(false)
+    apart(drain(kept), Records)
+    apart(provider.scan(allowing(request(RecordColumns))).rows, Records)
+  end)
+
+  suite.it('is handed a NIF\'s records and its scene\'s nodes in one row each', function()
+    local file = model()
+    local records, nodes = nifTables.recordsProvider(file), nifTables.sceneNodesProvider(file)
+    reuses(records.iterate(allowing(request(NifRecordColumns))), Built)
+    reuses(
+      nodes.iterate(allowing(request(NodeColumns, nil, { orderBy = by('index', true) }))),
+      { Nodes[4], Nodes[3], Nodes[2], Nodes[1] }
+    )
+
+    expect(records.iterate(request(NifRecordColumns)).volatileRows).toBe(false)
+    expect(nodes.iterate(request(NodeColumns)).volatileRows).toBe(false)
+    apart(drain(records.iterate(request(NifRecordColumns))), Built)
+    apart(drain(nodes.iterate(request(NodeColumns))), Nodes)
+    apart(records.scan(allowing(request(NifRecordColumns))).rows, Built)
+    apart(nodes.scan(allowing(request(NodeColumns))).rows, Nodes)
+  end)
+
+  suite.it('is handed a VFS\'s files in one row, and a looked-up stem\'s in a row each', function()
+    for _, lazy in { false, true } do
+      local provider = vfsTables.provider(stand(lazy).vfs)
+      reuses(provider.iterate(allowing(request(FileColumns))), fileRows(allKeys(), FileColumns))
+      reuses(
+        provider.iterate(allowing(request(KeyColumns, { where('path', 'LIKE', 'meshes/%') }))),
+        fileRows({ 'meshes/x/rock.nif', 'meshes/x/tree.nif', 'meshes/y/rock.kf', 'meshes/y/rock.nif' }, KeyColumns)
+      )
+
+      expect(provider.iterate(request(FileColumns)).volatileRows).toBe(false)
+      apart(drain(provider.iterate(request(FileColumns))), fileRows(allKeys(), FileColumns))
+      apart(provider.scan(allowing(request(FileColumns))).rows, fileRows(allKeys(), FileColumns))
+
+      local rocks = provider.lookup('stem', 'rock', allowing(request(FileColumns)))
+      assert(rocks)
+      apart(rocks.rows, fileRows({ 'meshes/x/rock.nif', 'meshes/y/rock.kf', 'meshes/y/rock.nif' }, FileColumns))
+    end
+  end)
+end)
+
 suite.describe('a limit past the rows there are', function()
   local huge = { 100000000, 4000000000, 2 ^ 53 }
 

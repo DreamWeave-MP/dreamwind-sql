@@ -17,7 +17,8 @@ type Scene = sceneModule.Scene
 
 --- A lazy scan in the engine's `_jessqlIter` protocol: `next` hands out rows until it returns nil.
 --- It is one of the engine's `Iterator`s that says more: its rows are its own to write, and every
---- flag the engine leaves optional is set.
+--- flag the engine leaves optional is set. `volatileRows` says `next` hands out one row table
+--- every time, filled anew, which it does only for a request that allows it.
 export type Iterator = util.Iterator
 
 export type RecordsProvider = {
@@ -78,7 +79,9 @@ local SceneNodeEqualities: { [string]: util.Kind } = table.freeze {
   visibility = 'string',
 }
 
-local function recordIterator(nif: Nif, request: Request): Iterator
+--- A lazy scan of a NIF's records. `volatile` has it fill one row table for every record, which
+--- only a request that allows it may be answered with.
+local function recordIterator(nif: Nif, request: Request, volatile: boolean): Iterator
   local wanted = util.columns(request)
   local template = util.template(wanted, RecordColumns)
   local wantIndex, wantType, wantName, wantDecoded = wanted.index, wanted.type, wanted.name, wanted.decoded
@@ -114,7 +117,7 @@ local function recordIterator(nif: Nif, request: Request): Iterator
       if onlyName and name ~= onlyName then return nil end
     end
 
-    local row = table.clone(template)
+    local row = if volatile then template else table.clone(template)
     if wantIndex then row.index = index end
     if wantType then row.type = kind end
     if wantName then row.name = name end
@@ -124,10 +127,11 @@ local function recordIterator(nif: Nif, request: Request): Iterator
 
   local function count(): number return nif.count end
 
-  return util.numbered(request, util.equalities(request, RecordEqualities), count, build)
+  return util.numbered(request, util.equalities(request, RecordEqualities), volatile, count, build)
 end
 
-local function nodeIterator(scene: Scene, request: Request): Iterator
+--- A lazy scan of a scene's nodes, filling one row table for every node when `volatile`.
+local function nodeIterator(scene: Scene, request: Request, volatile: boolean): Iterator
   local wanted = util.columns(request)
   local template = util.template(wanted, SceneNodeColumns)
   local nodes = scene.nodes
@@ -155,7 +159,7 @@ local function nodeIterator(scene: Scene, request: Request): Iterator
     if onlyBillboard ~= nil and node.billboard ~= onlyBillboard then return nil end
     if onlyVisibility and node.visibility ~= onlyVisibility then return nil end
 
-    local row = table.clone(template)
+    local row = if volatile then template else table.clone(template)
     if wantIndex then row.index = index end
     if wantSource then row.source = node.source end
     if wantType then row.record_type = node.recordType end
@@ -184,17 +188,17 @@ local function nodeIterator(scene: Scene, request: Request): Iterator
 
   local function count(): number return #nodes end
 
-  return util.numbered(request, util.equalities(request, SceneNodeEqualities), count, build)
+  return util.numbered(request, util.equalities(request, SceneNodeEqualities), volatile, count, build)
 end
 
 function exports.recordsProvider(nif: Nif): RecordsProvider
   return {
     columns = RecordColumns,
     iterate = function(request: Request): Iterator
-      return recordIterator(nif, request)
+      return recordIterator(nif, request, request.allowVolatileRows == true)
     end,
     scan = function(request: Request): ScanResult
-      return util.drain(recordIterator(nif, request), request, nif.count)
+      return util.drain(recordIterator(nif, request, false), request, nif.count)
     end,
   }
 end
@@ -212,11 +216,11 @@ function exports.sceneNodesProvider(nif: Nif): SceneNodesProvider
   return {
     columns = SceneNodeColumns,
     iterate = function(request: Request): Iterator
-      return nodeIterator(scene(), request)
+      return nodeIterator(scene(), request, request.allowVolatileRows == true)
     end,
     scan = function(request: Request): ScanResult
       local built = scene()
-      return util.drain(nodeIterator(built, request), request, #built.nodes)
+      return util.drain(nodeIterator(built, request, false), request, #built.nodes)
     end,
   }
 end
