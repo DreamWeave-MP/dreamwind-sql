@@ -518,6 +518,16 @@ for _, lazy in { false, true } do
       expect(provider.scan(({} :: unknown) :: Request).rows).toEqual(fileRows(allKeys(), {}))
     end)
 
+    suite.it('leaves a column it lacks out of its rows', function()
+      local scanned = provider.scan(request { 'stem', 'bogus', 'size', 'index' })
+      expect(scanned.rows).toEqual(fileRows(allKeys(), { 'stem', 'size' }))
+      expect(drain(provider.iterate(request { 'bogus', 'path' }))).toEqual(fileRows(allKeys(), { 'path' }))
+
+      local rocks = provider.lookup('stem', 'rock', request { 'bogus', 'name' })
+      assert(rocks)
+      expect(rocks.rows).toEqual { { name = 'rock.nif' }, { name = 'rock.kf' }, { name = 'rock.nif' } }
+    end)
+
     suite.it('asks for a page of keys when nothing constrains the scan', function()
       local first = provider.scan(request(KeyColumns, nil, { limit = 3, limitHint = 3 }))
       expect(first.rows).toEqual(fileRows({ 'a.b', 'icons/a.dds', 'meshes/x/rock.nif' }, KeyColumns))
@@ -936,6 +946,8 @@ suite.describe('tes3.records', function()
 
     expect(provider.scan(request {}).rows).toEqual(records(all, {}))
     expect(provider.scan(({} :: unknown) :: Request).rows).toEqual(records(all, {}))
+    expect(provider.scan(request { 'id', 'bogus', 'name', 'index' }).rows).toEqual(records(all, { 'id', 'index' }))
+    expect(drain(provider.iterate(request { 'path', 'size' }))).toEqual(records(all, { 'size' }))
   end)
 
   suite.it('goes straight to an index', function()
@@ -1337,6 +1349,8 @@ suite.describe('nif.records', function()
     expect(provider.scan(request { 'decoded' }).rows).toEqual(pick(Built, all, { 'decoded' }))
     expect(provider.scan(request {}).rows).toEqual(pick(Built, all, {}))
     expect(drain(provider.iterate(({} :: unknown) :: Request))).toEqual(pick(Built, all, {}))
+    expect(provider.scan(request { 'name', 'bogus', 'id', 'index' }).rows).toEqual(pick(Built, all, { 'name', 'index' }))
+    expect(drain(provider.iterate(request { 'source', 'type' }))).toEqual(pick(Built, all, { 'type' }))
   end)
 
   suite.it('goes straight to an index', function()
@@ -1554,6 +1568,11 @@ suite.describe('nif.scene_nodes', function()
     end
 
     expect(provider.scan(({} :: unknown) :: Request).rows).toEqual(pick(Nodes, all, {}))
+    expect(provider.scan(request { 'parent', 'bogus', 'type', 'world_y' }).rows).toEqual(
+      pick(Nodes, all, { 'parent', 'world_y' })
+    )
+
+    expect(drain(provider.iterate(request { 'decoded', 'local_z' }))).toEqual(pick(Nodes, all, { 'local_z' }))
   end)
 
   suite.it('goes straight to an index', function()
