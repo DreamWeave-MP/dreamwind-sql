@@ -176,7 +176,7 @@ local function recordRows(nif: Nif, request: Request): ScanResult
   local iter = recordIterator(nif, request)
   local orderBy = request.orderBy
   local limit = if iter.handledWhere and (orderBy == nil or iter.ordered) then request.limitHint or request.limit else nil
-  local out: { Row } = if limit ~= nil then table.create(limit) :: { Row } else {}
+  local out: { Row } = if limit ~= nil then table.create(math.min(limit, nif.count)) :: { Row } else {}
   while true do
     local row = iter.next()
     if row == nil then break end
@@ -229,7 +229,7 @@ local function nodeRows(scene: Scene, request: Request): ScanResult
     descending = orderBy[1].desc == true
   end
   local limit = if handledWhere and (orderBy == nil or ordered) then request.limitHint or request.limit else nil
-  if limit ~= nil then out = table.create(limit) :: { Row } end
+  if limit ~= nil then out = table.create(math.min(limit, #scene.nodes)) :: { Row } end
 
   local function emit(index: number): boolean
     local node = scene.nodes[index + 1]

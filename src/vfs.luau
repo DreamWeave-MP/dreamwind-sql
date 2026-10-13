@@ -153,7 +153,6 @@ local function rowsFor(vfs: Vfs, request: Request): ScanResult
 
   local canLimit = handledWhere and (orderBy == nil or ordered)
   local limit = if canLimit then request.limitHint or request.limit else nil
-  local out: { Row } = if limit ~= nil then table.create(limit) :: { Row } else {}
   local constraints = request.constraints or {}
   local needsFile = wanted.physical_path or wanted.size or wanted.is_loose or wanted.is_archive
     or wanted.archive_path or wanted.archive_name
@@ -184,6 +183,9 @@ local function rowsFor(vfs: Vfs, request: Request): ScanResult
   else
     candidates = if keyOnly then vfs:keys() else vfs:entries()
   end
+
+  -- Room for the rows a limit allows, as far as there are candidates to make them of.
+  local out: { Row } = if limit ~= nil then table.create(math.min(limit, #candidates)) :: { Row } else {}
 
   -- `keyOnly` chose what the candidates are: keys, or entries that carry their file.
   local function emit(item: string | Entry): boolean

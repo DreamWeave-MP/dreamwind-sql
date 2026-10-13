@@ -1545,6 +1545,49 @@ suite.describe('nif.scene_nodes', function()
   end)
 end)
 
+suite.describe('a limit past the rows there are', function()
+  local huge = { 100000000, 4000000000, 2 ^ 53 }
+
+  suite.it('makes room for no more rows than a VFS lists', function()
+    for _, lazy in { false, true } do
+      local provider = vfsTables.provider(stand(lazy).vfs)
+      for _, limit in huge do
+        local keys = provider.scan(request({ 'path' }, nil, { limit = limit, limitHint = limit }))
+        expect(#keys.rows).toBe(#Listings)
+        expect(claims(keys)).toBe 'where constraints limited'
+
+        local under = provider.scan(
+          request(FileColumns, { where('path', 'LIKE', 'meshes/%') }, { limit = limit, limitHint = limit })
+        )
+        expect(#under.rows).toBe(4)
+      end
+    end
+  end)
+
+  suite.it('makes room for no more rows than a plugin or a NIF holds', function()
+    local file = model()
+    local scans = {
+      tes3Tables.provider(plugin()).scan,
+      nifTables.recordsProvider(file).scan,
+      nifTables.sceneNodesProvider(file).scan,
+    }
+
+    for position, scan in scans do
+      for _, limit in huge do
+        local scanned = scan(request({ 'index' }, nil, { limit = limit, limitHint = limit }))
+        expect(#scanned.rows).toBe(({ 7, 5, 4 })[position])
+        expect(claims(scanned)).toBe 'where constraints limited'
+      end
+    end
+
+    local db = sql.new { tes3 = plugin(), nif = file }
+    expect(#db:query('SELECT index FROM tes3.records LIMIT 4000000000').rows).toBe(7)
+    expect(#db:query('SELECT index FROM nif.records LIMIT 4000000000').rows).toBe(5)
+    expect(#db:query('SELECT index FROM nif.scene_nodes LIMIT 4000000000').rows).toBe(4)
+    expect(#db:query('SELECT index FROM nif.scene_nodes ORDER BY index DESC LIMIT 100000000').rows).toBe(4)
+  end)
+end)
+
 suite.describe('a database', function()
   local function names(db: sql.Database): { string }
     local out = {}

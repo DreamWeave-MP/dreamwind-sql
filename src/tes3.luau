@@ -80,7 +80,7 @@ local function rowsFor(plugin: Plugin, request: Request): ScanResult
     descending = orderBy[1].desc == true
   end
   local limit = if handledWhere and (orderBy == nil or ordered) then request.limitHint or request.limit else nil
-  if limit ~= nil then out = table.create(limit) :: { Row } end
+  if limit ~= nil then out = table.create(math.min(limit, count)) :: { Row } end
 
   local function emit(index: number): boolean
     if index < 0 or index >= count then return false end
