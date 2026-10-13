@@ -44,6 +44,8 @@ local function matchingIndices(plugin: Plugin, request: Request): { number }?
 end
 
 local function supportedConstraints(request: Request): boolean
+  if util.repeatsColumn(request) then return false end
+
   for _, constraint in request.constraints or {} do
     if constraint.op ~= '=' then return false end
 

@@ -37,6 +37,19 @@ function exports.constraint(request: Request, column: string, op: string): unkno
   return nil
 end
 
+--- Whether two of a request's constraints are on one column. A scan that reads one constraint
+--- for each column holds its rows to the first alone, so such a WHERE is the engine's to apply.
+function exports.repeatsColumn(request: Request): boolean
+  local seen: { [string]: boolean } = {}
+  for _, constraint in request.constraints or {} do
+    if seen[constraint.column] then return true end
+
+    seen[constraint.column] = true
+  end
+
+  return false
+end
+
 function exports.hasConstraint(request: Request, column: string): boolean
   for _, constraint in request.constraints or {} do
     if constraint.column == column then return true end

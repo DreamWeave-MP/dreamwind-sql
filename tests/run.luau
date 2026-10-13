@@ -874,6 +874,29 @@ suite.describe('tes3.records', function()
     expect(claims(narrowed)).toBe ''
   end)
 
+  suite.it('leaves a column held to two values to the engine', function()
+    local pairs = {
+      { where('type', '=', 'STAT'), where('type', '=', 'NPC_') },
+      { where('id', '=', 'rock'), where('id', '=', 'oak') },
+      { where('index', '=', 1), where('index', '=', 2) },
+      { where('flags', '=', 0x400), where('flags', '=', 0) },
+      { where('size', '=', 13), where('type', '=', 'STAT'), where('size', '=', 12) },
+      { where('dirty', '=', false), where('dirty', '=', true) },
+      { where('partial', '=', false), where('partial', '=', false) },
+    }
+
+    for _, pair in pairs do
+      expect(claims(provider.scan(request({ 'index' }, pair)))).toBe ''
+    end
+
+    local db = sql.new { tes3 = plugin() }
+    expect(db:query('SELECT index FROM tes3.records WHERE type = \'STAT\' AND type = \'NPC_\'').rows).toEqual {}
+    expect(db:query('SELECT index FROM tes3.records WHERE index = 1 AND index = 2').rows).toEqual {}
+    expect(db:query('SELECT index FROM tes3.records WHERE id = ? AND id = ?', { 'rock', 'oak' }).rows).toEqual {}
+    expect(db:query('SELECT index FROM tes3.records WHERE flags = 1024 AND type = \'NPC_\' AND flags = 0').rows).toEqual {}
+    expect(db:query('SELECT index FROM tes3.records WHERE dirty = true AND dirty = true').rows).toEqual { { index = 3 } }
+  end)
+
   suite.it('orders by index alone, and stops at a limit only in an order it keeps', function()
     local last = provider.scan(request({ 'index' }, nil, { limitHint = 2, orderBy = by('index', true) }))
     expect(column(last.rows, 'index')).toEqual { 6, 5 }
@@ -1207,6 +1230,28 @@ suite.describe('nif.records', function()
     expect(claims(narrowed)).toBe ''
   end)
 
+  suite.it('leaves a column held to two values to the engine', function()
+    local pairs = {
+      { where('type', '=', 'NiNode'), where('type', '=', 'NiTriShape') },
+      { where('name', '=', 'Child'), where('name', '=', 'Root') },
+      { where('index', '=', 1), where('index', '=', 2) },
+      { where('decoded', '=', true), where('type', '=', 'NiNode'), where('decoded', '=', false) },
+      { where('type', '=', 'NiNode'), where('type', '=', 'NiNode') },
+    }
+
+    for _, pair in pairs do
+      expect(claims(provider.scan(request({ 'index' }, pair)))).toBe ''
+      expect(claims(provider.iterate(request({ 'index' }, pair)))).toBe ''
+    end
+
+    local db = sql.new { nif = file }
+    expect(db:query('SELECT index FROM nif.records WHERE type = \'NiNode\' AND type = \'NiTriShape\'').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.records WHERE index = 1 AND index = 2').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.records WHERE name = ? AND name = ?', { 'Child', 'Root' }).rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.records WHERE decoded = true AND decoded = false').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.records WHERE name = \'Root\' AND name = \'Root\'').rows).toEqual { { index = 0 } }
+  end)
+
   suite.it('orders by index alone, and stops at a limit only in an order it keeps', function()
     local last = provider.scan(request({ 'index' }, nil, { limitHint = 2, orderBy = by('index', true) }))
     expect(column(last.rows, 'index')).toEqual { 4, 3 }
@@ -1389,6 +1434,30 @@ suite.describe('nif.scene_nodes', function()
     local narrowed = provider.scan(request({ 'index' }, { where('name', '=', 'Child'), where('world_x', '=', 1) }))
     expect(column(narrowed.rows, 'index')).toEqual { 1, 3 }
     expect(claims(narrowed)).toBe ''
+  end)
+
+  suite.it('leaves a column held to two values to the engine', function()
+    local pairs = {
+      { where('record_type', '=', 'NiNode'), where('record_type', '=', 'NiTriShape') },
+      { where('name', '=', 'Child'), where('name', '=', 'Root') },
+      { where('index', '=', 1), where('index', '=', 2) },
+      { where('source', '=', 1), where('source', '=', 4) },
+      { where('parent', '=', 0), where('billboard', '=', true), where('parent', '=', 1) },
+      { where('subtree_end', '=', 3), where('subtree_end', '=', 4) },
+      { where('billboard', '=', true), where('billboard', '=', false) },
+      { where('visibility', '=', 'Hidden'), where('visibility', '=', 'Hidden') },
+    }
+
+    for _, pair in pairs do
+      expect(claims(provider.scan(request({ 'index' }, pair)))).toBe ''
+    end
+
+    local db = sql.new { nif = file }
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE name = \'Child\' AND name = \'Root\'').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE index = 1 AND index = 2').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE parent = ? AND parent = ?', { 0, 1 }).rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE billboard = true AND billboard = false').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE source = 4 AND source = 4').rows).toEqual { { index = 3 } }
   end)
 
   suite.it('orders by index alone, and stops at a limit only in an order it keeps', function()

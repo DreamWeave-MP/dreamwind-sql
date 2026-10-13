@@ -63,6 +63,8 @@ local SceneNodeColumns = table.freeze {
 }
 
 local function supportedRecordConstraints(request: Request): boolean
+  if util.repeatsColumn(request) then return false end
+
   for _, constraint in request.constraints or {} do
     if constraint.op ~= '=' then return false end
 
@@ -185,6 +187,8 @@ local function recordRows(nif: Nif, request: Request): ScanResult
 end
 
 local function supportedSceneConstraints(request: Request): boolean
+  if util.repeatsColumn(request) then return false end
+
   for _, constraint in request.constraints or {} do
     if constraint.op ~= '=' then return false end
 
