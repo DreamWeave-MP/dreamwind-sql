@@ -839,6 +839,37 @@ suite.describe('tes3.records', function()
     expect(matching(where('type', '=', 'NPC_'), where('id', '=', 'rock'), where('flags', '=', 0))).toEqual {}
   end)
 
+  suite.it('finds every record of a type and id, and none of a type that is no tag', function()
+    local twice = tes3.open(
+      record('STAT', subrecord('NAME', 'rock\0'))
+        .. record('NPC_', subrecord('NAME', 'rock\0'))
+        .. record('STAT', subrecord('NAME', 'tree\0'))
+        .. record('STAT', subrecord('NAME', 'rock\0'), 0x400)
+    )
+    local both = { where('type', '=', 'STAT'), where('id', '=', 'rock') }
+    local scanned = tes3Tables.provider(twice).scan(request({ 'index', 'flags' }, both))
+    expect(scanned.rows).toEqual { { index = 0, flags = 0 }, { index = 3, flags = 0x400 } }
+    expect(claims(scanned)).toBe 'where constraints'
+
+    for _, tag in { 'STA', 'STATS', '' } do
+      local none = provider.scan(request({ 'index' }, { where('type', '=', tag), where('id', '=', 'rock') }))
+      expect(none.rows).toEqual {}
+      expect(claims(none)).toBe 'where constraints'
+    end
+
+    local db = sql.new { tes3 = twice }
+    expect(db:query('SELECT index FROM tes3.records WHERE type = \'STAT\' AND id = \'rock\'').rows).toEqual {
+      { index = 0 },
+      { index = 3 },
+    }
+
+    expect(db:query('SELECT COUNT(*) AS records FROM tes3.records WHERE id = ? AND type = ?', { 'rock', 'STAT' }).rows).toEqual {
+      { records = 2 },
+    }
+
+    expect(db:query('SELECT index FROM tes3.records WHERE type = \'STA\' AND id = \'rock\'').rows).toEqual {}
+  end)
+
   suite.it('reads an id only where one is asked for or compared', function()
     local scanned = provider.scan(request({ 'type', 'id' }, { where('type', '=', 'SCPT') }))
     expect(scanned.rows).toEqual { { type = 'SCPT', id = 'startup' } }

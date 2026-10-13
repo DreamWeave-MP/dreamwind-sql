@@ -28,18 +28,12 @@ local Columns = table.freeze {
   'partial',
 }
 
---- The records a request's constraints name outright, or nil when it takes a scan to find them.
+--- The record a request's constraints name outright, or nil when it takes a scan to find them.
 --- No record is at an index that is no whole number.
-local function matchingIndices(plugin: Plugin, request: Request): { number }?
+local function matchingIndices(request: Request): { number }?
   local index = util.constraint(request, 'index', '=')
   if type(index) == 'number' then return if index % 1 == 0 then { index } else {} end
 
-  local kind = util.constraint(request, 'type', '=')
-  local id = util.constraint(request, 'id', '=')
-  if type(kind) == 'string' and type(id) == 'string' then
-    local found = tes3.records.find(plugin, kind, id)
-    return if found == nil then {} else { found }
-  end
   return nil
 end
 
@@ -66,7 +60,7 @@ end
 
 local function rowsFor(plugin: Plugin, request: Request): ScanResult
   local wanted = util.columns(request)
-  local direct = matchingIndices(plugin, request)
+  local direct = matchingIndices(request)
   local out: { Row } = {}
   local count = plugin:count()
   local exactType = util.constraint(request, 'type', '=')
