@@ -798,6 +798,19 @@ suite.describe('tes3.records', function()
     expect(same.rows).toEqual { { index = 2 } }
   end)
 
+  suite.it('finds no record at an index that is no whole number, and leaves saying so to the engine', function()
+    for _, between in { 1.5, -0.5, 1 / 0, 0 / 0 } do
+      local scanned = provider.scan(request(RecordColumns, { where('index', '=', between) }))
+      expect(scanned.rows).toEqual {}
+      expect(claims(scanned)).toBe ''
+    end
+
+    local db = sql.new { tes3 = plugin() }
+    expect(db:query('SELECT index FROM tes3.records WHERE index = 1.5').rows).toEqual {}
+    expect(db:query('SELECT index FROM tes3.records WHERE index = ?', { 2.5 }).rows).toEqual {}
+    expect(db:query('SELECT index FROM tes3.records WHERE index = 2.0').rows).toEqual { { index = 2 } }
+  end)
+
   suite.it('holds a record to each column it is asked to equal', function()
     local function matching(...: Constraint): { unknown }
       local scanned = provider.scan(request({ 'index' }, { ... }))
@@ -1136,9 +1149,16 @@ suite.describe('nif.records', function()
   end)
 
   suite.it('finds no record at an index that is no whole number, and leaves saying so to the engine', function()
-    local scanned = provider.scan(request(NifRecordColumns, { where('index', '=', 1.5) }))
-    expect(scanned.rows).toEqual {}
-    expect(claims(scanned)).toBe ''
+    for _, between in { 1.5, -0.5, 1 / 0, 0 / 0 } do
+      local scanned = provider.scan(request(NifRecordColumns, { where('index', '=', between) }))
+      expect(scanned.rows).toEqual {}
+      expect(claims(scanned)).toBe ''
+      expect(provider.iterate(request(NifRecordColumns, { where('index', '=', between) })).next()).toBeNil()
+    end
+
+    local db = sql.new { nif = file }
+    expect(db:query('SELECT index FROM nif.records WHERE index = 1.5').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.records WHERE index = 2.0').rows).toEqual { { index = 2 } }
   end)
 
   suite.it('holds a record to each column it is asked to equal', function()
@@ -1306,6 +1326,19 @@ suite.describe('nif.scene_nodes', function()
 
     local other = provider.scan(request(NodeColumns, { where('index', '=', 2), where('name', '=', 'Root') }))
     expect(other.rows).toEqual {}
+  end)
+
+  suite.it('finds no node at an index that is no whole number, and leaves saying so to the engine', function()
+    for _, between in { 1.5, -0.5, 1 / 0, 0 / 0 } do
+      local scanned = provider.scan(request(NodeColumns, { where('index', '=', between) }))
+      expect(scanned.rows).toEqual {}
+      expect(claims(scanned)).toBe ''
+    end
+
+    local db = sql.new { nif = file }
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE index = 1.5').rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE index = ?', { 2.5 }).rows).toEqual {}
+    expect(db:query('SELECT index FROM nif.scene_nodes WHERE index = 2.0').rows).toEqual { { index = 2 } }
   end)
 
   suite.it('holds a node to each column it is asked to equal', function()

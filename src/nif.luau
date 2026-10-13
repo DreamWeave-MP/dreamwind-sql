@@ -188,7 +188,9 @@ local function supportedSceneConstraints(request: Request): boolean
   for _, constraint in request.constraints or {} do
     if constraint.op ~= '=' then return false end
 
-    if constraint.column == 'index' or constraint.column == 'source' or constraint.column == 'parent' or constraint.column == 'subtree_end' then
+    if constraint.column == 'index' then
+      if type(constraint.value) ~= 'number' or constraint.value % 1 ~= 0 then return false end
+    elseif constraint.column == 'source' or constraint.column == 'parent' or constraint.column == 'subtree_end' then
       if type(constraint.value) ~= 'number' then return false end
     elseif constraint.column == 'record_type' or constraint.column == 'name' or constraint.column == 'visibility' then
       if type(constraint.value) ~= 'string' then return false end
@@ -263,8 +265,9 @@ local function nodeRows(scene: Scene, request: Request): ScanResult
     return limit ~= nil and #out >= limit
   end
 
-  if type(exactIndex) == 'number' and exactIndex % 1 == 0 then
-    emit(exactIndex)
+  -- No node is at an index that is no whole number.
+  if type(exactIndex) == 'number' then
+    if exactIndex % 1 == 0 then emit(exactIndex) end
   elseif descending then
     for index = #scene.nodes - 1, 0, -1 do if emit(index) then break end end
   else

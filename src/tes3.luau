@@ -28,15 +28,11 @@ local Columns = table.freeze {
   'partial',
 }
 
-local function exactIndex(request: Request): number?
-  local value = util.constraint(request, 'index', '=')
-  if type(value) == 'number' and value % 1 == 0 then return value end
-  return nil
-end
-
+--- The records a request's constraints name outright, or nil when it takes a scan to find them.
+--- No record is at an index that is no whole number.
 local function matchingIndices(plugin: Plugin, request: Request): { number }?
-  local index = exactIndex(request)
-  if index ~= nil then return { index } end
+  local index = util.constraint(request, 'index', '=')
+  if type(index) == 'number' then return if index % 1 == 0 then { index } else {} end
 
   local kind = util.constraint(request, 'type', '=')
   local id = util.constraint(request, 'id', '=')
@@ -51,7 +47,9 @@ local function supportedConstraints(request: Request): boolean
   for _, constraint in request.constraints or {} do
     if constraint.op ~= '=' then return false end
 
-    if constraint.column == 'index' or constraint.column == 'flags' or constraint.column == 'size' then
+    if constraint.column == 'index' then
+      if type(constraint.value) ~= 'number' or constraint.value % 1 ~= 0 then return false end
+    elseif constraint.column == 'flags' or constraint.column == 'size' then
       if type(constraint.value) ~= 'number' then return false end
     elseif constraint.column == 'type' or constraint.column == 'id' then
       if type(constraint.value) ~= 'string' then return false end
