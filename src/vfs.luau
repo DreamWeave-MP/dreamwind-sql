@@ -67,63 +67,75 @@ local function normalizedPrefix(value: string): boolean
   return string.find(value, '[A-Z]') == nil
 end
 
-local function logicalName(path: string): string
+--- Where a key's name starts, and where the dot before its extension is: 0 for a name with no
+--- dot past its first byte, which has no extension. One walk back from the end finds both.
+local function split(path: string): (number, number)
+  local dot = 0
   for index = #path, 1, -1 do
-    if string.byte(path, index) == 47 then return string.sub(path, index + 1) end
+    local byte = string.byte(path, index)
+    if byte == 47 then return index + 1, if dot > index + 1 then dot else 0 end
+
+    if byte == 46 and dot == 0 then dot = index end
   end
-  return path
+
+  return 1, if dot > 1 then dot else 0
 end
 
+--- A key's stem: its name, up to the dot before its extension.
 local function logicalStem(path: string): string
-  local start = 1
-  for index = #path, 1, -1 do
-    if string.byte(path, index) == 47 then start = index + 1; break end
-  end
-
-  for index = #path, start + 1, -1 do
-    if string.byte(path, index) == 46 then return string.sub(path, start, index - 1) end
-  end
-  return string.sub(path, start)
+  local start, dot = split(path)
+  return string.sub(path, start, if dot == 0 then -1 else dot - 1)
 end
 
-local function pathPlan(request: Request): (string?, string?, boolean, boolean, ((string) -> boolean))
+--- What a request's constraints on `path` come to: the one path they name, if any; the longest
+--- prefix they give, if any; whether they are the whole WHERE, and whether every constraint is
+--- among them; and what holds a key to all of them, or nil when there is nothing to hold it to.
+--- A path is equal to a string, or LIKE a pattern that is a path or a prefix and one `%`.
+local function pathPlan(request: Request): (string?, string?, boolean, boolean, ((key: string) -> boolean)?)
   local exact: string? = nil
   local prefix: string? = nil
   local localHandled = true
-  local tests: { (string) -> boolean } = {}
+  local paths: { string }, prefixes: { string } = {}, {}
 
   for _, constraint in request.constraints or {} do
     if constraint.column ~= 'path' or type(constraint.value) ~= 'string' then
       localHandled = false
     elseif constraint.op == '=' then
-      local expected = constraint.value
-      exact = exact or expected
-      tests[#tests + 1] = function(value: string): boolean return value == expected end
+      exact = exact or constraint.value
+      table.insert(paths, constraint.value)
     elseif constraint.op == 'LIKE' then
       local pattern = constraint.value
       local simple = util.likePrefix(pattern)
-      if simple == nil then
+      if not simple then
         localHandled = false
+      elseif simple == pattern then
+        exact = exact or pattern
+        table.insert(paths, pattern)
       else
-        tests[#tests + 1] = function(value: string): boolean
-          return util.matchesSimpleLike(value, pattern) == true
-        end
-
-        if not string.find(pattern, '%', 1, true) then
-          exact = exact or pattern
-        elseif not prefix or #simple > #prefix then
-          prefix = simple
-        end
+        table.insert(prefixes, simple)
+        if not prefix or #simple > #prefix then prefix = simple end
       end
     else
       localHandled = false
     end
   end
 
-  return exact, prefix, request.whereComplete == true and localHandled, localHandled, function(value: string): boolean
-    for _, test in tests do if not test(value) then return false end end
-    return true
+  local matches: ((key: string) -> boolean)? = nil
+  if #paths + #prefixes > 0 then
+    matches = function(key: string): boolean
+      for _, path in paths do
+        if key ~= path then return false end
+      end
+
+      for _, start in prefixes do
+        if string.sub(key, 1, #start) ~= start then return false end
+      end
+
+      return true
+    end
   end
+
+  return exact, prefix, request.whereComplete == true and localHandled, localHandled, matches
 end
 
 --- What makes a request's rows, and whether a row needs its file: a function of a key, and of
@@ -147,8 +159,13 @@ local function rowMaker(vfs: Vfs, request: Request): ((key: string, given: File?
     local row = table.clone(template)
     if wantPath then row.path = key end
     if wantPhysicalPath and file then row.physical_path = file:path() end
-    if wantName then row.name = logicalName(key) end
-    if wantStem then row.stem = logicalStem(key) end
+
+    if wantName or wantStem then
+      local start, dot = split(key)
+      if wantName then row.name = if start == 1 then key else string.sub(key, start) end
+      if wantStem then row.stem = string.sub(key, start, if dot == 0 then -1 else dot - 1) end
+    end
+
     if wantSize and file then row.size = file:size() end
     if wantLoose and file then row.is_loose = file:isLoose() end
     if wantArchive and file then row.is_archive = file:isArchive() end
@@ -203,7 +220,7 @@ local function plan(
   -- `keyOnly` chose what the candidates are: keys, or entries that carry their file.
   local function rowOf(item: string | Entry): Row?
     local key = if keyOnly then item :: string else (item :: Entry).key
-    if not matchesPath(key) then return nil end
+    if matchesPath and not matchesPath(key) then return nil end
 
     return make(key, if keyOnly then nil else (item :: Entry).file)
   end
@@ -286,12 +303,12 @@ function exports.provider(vfs: Vfs): Provider
       local bucket = stemDuplicates[value]
       if bucket ~= nil then
         for _, key in bucket do
-          if matchesPath(key) then
+          if not matchesPath or matchesPath(key) then
             local row = make(key, nil)
             if row ~= nil then out[#out+1] = row end
           end
         end
-      elseif matchesPath(first) then
+      elseif not matchesPath or matchesPath(first) then
         local row = make(first, nil)
         if row ~= nil then out[1] = row end
       end

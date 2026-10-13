@@ -221,6 +221,10 @@ function exports.scanResult(rows: { Row }, handledWhere: boolean, ordered: boole
   }
 end
 
+--- What a LIKE pattern is a prefix of, when it is no more than that: the pattern itself when it
+--- has no wildcard, so that a value is LIKE it only by being it, and what comes before its `%`
+--- when that is its one wildcard and its last byte, so that a value is LIKE it by starting so.
+--- Nil for any other pattern.
 function exports.likePrefix(pattern: unknown): string?
   if type(pattern) ~= 'string' then return nil end
   local percent = string.find(pattern, '%', 1, true)
@@ -229,16 +233,6 @@ function exports.likePrefix(pattern: unknown): string?
   if not percent then return pattern end
   if percent ~= #pattern then return nil end
   return string.sub(pattern, 1, #pattern - 1)
-end
-
-function exports.matchesSimpleLike(value: string, pattern: string): boolean?
-  local underscore = string.find(pattern, '_', 1, true)
-  if underscore then return nil end
-  local first = string.find(pattern, '%', 1, true)
-  if not first then return value == pattern end
-  if first ~= #pattern or string.find(pattern, '%', first + 1, true) then return nil end
-  local prefix = string.sub(pattern, 1, -2)
-  return #value >= #prefix and string.sub(value, 1, #prefix) == prefix
 end
 
 return table.freeze(exports)
