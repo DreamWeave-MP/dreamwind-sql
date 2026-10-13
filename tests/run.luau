@@ -214,22 +214,10 @@ local function fileRow(listing: Listing, columns: { string }): Row
 end
 
 local function fileRows(keys: { string }, columns: { string }): { Row }
-  local rows = {}
-  for _, key in keys do
-    table.insert(rows, fileRow(ByKey[key], columns))
-  end
-
-  return rows
+  return [for key in keys => fileRow(ByKey[key], columns)]
 end
 
-local function allKeys(): { string }
-  local keys = {}
-  for _, listing in Listings do
-    table.insert(keys, listing.key)
-  end
-
-  return keys
-end
+local function allKeys(): { string } return [for listing in Listings => listing.key] end
 
 --- A list as the vfs package hands most of its own out: an empty table whose rows are made when
 --- they are read, by index or by a generic `for`. `read` is told of each row made.
@@ -332,12 +320,7 @@ local function stand(lazy: boolean): Stand
   end
 
   local function entries(keys: { string })
-    local out = {}
-    for _, key in keys do
-      table.insert(out, { key = key, file = file(listings[key]) })
-    end
-
-    return out
+    return [for key in keys => { key = key, file = file(listings[key]) }]
   end
 
   local function called(name: string, ...: unknown)
@@ -774,14 +757,7 @@ for _, lazy in { false, true } do
         expect(found.rows).toEqual {}
       end
 
-      local listed = 0
-      for _, call in files.calls do
-        if call == 'keysStartingWith \'\' nil nil' then
-          listed += 1
-        end
-      end
-
-      expect(listed).toBe(1)
+      expect(#[for call in files.calls if call == 'keysStartingWith \'\' nil nil' => call]).toBe(1)
 
       local stone: Listing = {
         key = 'meshes/z/stone.nif',
@@ -1987,11 +1963,7 @@ end)
 
 suite.describe('a database', function()
   local function names(db: sql.Database): { string }
-    local out = {}
-    for _, info in db:tables() do
-      table.insert(out, info.name)
-    end
-
+    local out = [for info in db:tables() => info.name]
     table.sort(out)
     return out
   end

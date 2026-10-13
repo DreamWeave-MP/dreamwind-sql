@@ -373,17 +373,15 @@ local function stemOf(key: string): string return string.match(key, '([^/]*)%.[^
 
 local function nameOf(key: string): string return string.match(key, '[^/]*$') :: string end
 
-local meshKeys: { string } = {}
-
-for _, key in sortedKeys do
-  if string.sub(key, 1, 7) == 'meshes/' then table.insert(meshKeys, key) end
-end
+local meshKeys = [for key in sortedKeys if string.sub(key, 1, 7) == 'meshes/' => key]
 
 do
-  local page = {}
-  for index = #meshKeys, #meshKeys - 19, -1 do
-    table.insert(page, { path = meshKeys[index], stem = stemOf(meshKeys[index]) })
-  end
+  local page = [
+    for index in range(#meshKeys, #meshKeys - 19, -1) => {
+      path = meshKeys[index],
+      stem = stemOf(meshKeys[index]),
+    }
+  ]
 
   query(
     'vfs query: a page of a prefix, from the end',
@@ -392,10 +390,12 @@ do
     page
   )
 
-  local tail = {}
-  for index = #sortedKeys, #sortedKeys - 19, -1 do
-    table.insert(tail, { path = sortedKeys[index], name = nameOf(sortedKeys[index]) })
-  end
+  local tail = [
+    for index in range(#sortedKeys, #sortedKeys - 19, -1) => {
+      path = sortedKeys[index],
+      name = nameOf(sortedKeys[index]),
+    }
+  ]
 
   query(
     'vfs query: a page of every key, from the end',
@@ -404,10 +404,7 @@ do
     tail
   )
 
-  local under = {}
-  for _, key in meshKeys do
-    table.insert(under, { path = key, name = nameOf(key), stem = stemOf(key) })
-  end
+  local under = [for key in meshKeys => { path = key, name = nameOf(key), stem = stemOf(key) }]
 
   query(
     `vfs query: {#under} keys under a prefix`,
@@ -416,18 +413,13 @@ do
     under
   )
 
-  local archives = {}
-  for archive = 0, 2 do
-    local count, total = 0, 0
-    for index = 10, FileCount, 10 do
-      if index % 3 == archive then
-        count += 1
-        total += 1000 + index % 977
-      end
-    end
-
-    table.insert(archives, { archive_name = `archive{archive}.bsa`, files = count, bytes = total })
-  end
+  local archives = [
+    for archive in range(0, 2) => {
+      archive_name = `archive{archive}.bsa`,
+      files = #[for index in range(10, FileCount, 10) if index % 3 == archive => index],
+      bytes = sum[for index in range(10, FileCount, 10) if index % 3 == archive => 1000 + index % 977],
+    }
+  ]
 
   query(
     `vfs query: {FileCount} files, those in archives counted by archive`,
@@ -479,15 +471,11 @@ do
     end
   )
 
-  local stems = table.create(1000) :: { string }
-  local last = {}
-  for index = 1, 1000 do
-    stems[index] = string.format('%06d', index * 25)
-  end
-
-  for _, kind in { { 'meshes', 'nif' }, { 'textures', 'dds' } } do
-    table.insert(last, { path = `{kind[1]}/generated/000/025000.{kind[2]}`, stem = '025000' })
-  end
+  local stems = [for index in range(1, 1000) => string.format('%06d', index * 25)]
+  local last = {
+    { path = 'meshes/generated/000/025000.nif', stem = '025000' },
+    { path = 'textures/generated/000/025000.dds', stem = '025000' },
+  }
 
   workload(
     'vfs lookup: 1000 stems of two files each, the last one\'s rows kept',
@@ -522,19 +510,12 @@ do
     joined
   )
 
-  local pairs, total = 0, 0
-  for index = 0, NifCount - 1 do
-    if shapeAt(index) then
-      pairs += 2
-      total += index * 2
-    end
-  end
-
+  local shapes = [for index in range(0, NifCount - 1) if shapeAt(index) => index]
   query(
-    `join query: {pairs // 2} NIF records joined to their two files each`,
+    `join query: {#shapes} NIF records joined to their two files each`,
     [[SELECT COUNT(*) AS pairs, SUM(n.index) AS total FROM vfs.files f JOIN nif.records n ON f.stem = n.name]],
     { 'pairs', 'total' },
-    { { pairs = pairs, total = total } }
+    { { pairs = #shapes * 2, total = sum[for index in shapes => index * 2] } }
   )
 end
 
@@ -557,10 +538,7 @@ do
   scan(`tes3 scan: {RecordCount + 1} records, every column`, records, request(records.columns), every)
   scan(`tes3 scan: {RecordCount + 1} records, index and type`, records, request { 'index', 'type' }, every)
 
-  local doors = {}
-  for index = 1, RecordCount do
-    if typeAt(index) == 'DOOR' then table.insert(doors, { index = index, id = idAt(index) }) end
-  end
+  local doors = [for index in range(1, RecordCount) if typeAt(index) == 'DOOR' => { index = index, id = idAt(index) }]
 
   query(
     `tes3 query: {#doors} records of one type, with their ids`,
@@ -572,10 +550,9 @@ do
   local types = table.clone(RecordTypes)
   table.insert(types, 'TES3')
   table.sort(types)
-  local counted = {}
-  for _, tag in types do
-    table.insert(counted, { type = tag, records = if tag == 'TES3' then 1 else RecordCount // #RecordTypes })
-  end
+  local counted = [
+    for tag in types => { type = tag, records = if tag == 'TES3' then 1 else RecordCount // #RecordTypes }
+  ]
 
   query(
     `tes3 query: {RecordCount + 1} records counted by type`,
@@ -615,20 +592,13 @@ do
     flagged
   )
 
-  local bytes, plain = #HeaderPayload, 1
-  for index = 1, RecordCount do
-    if flagsAt(index) == 0 then
-      bytes += #payloadAt(index)
-      plain += 1
-    end
-  end
-
+  local plain = [for index in range(1, RecordCount) if flagsAt(index) == 0 => index]
   query(
     `tes3 query: {RecordCount + 1} records, the sizes of the unflagged summed`,
     [[SELECT SUM(size) AS bytes, COUNT(*) AS records FROM tes3.records
       WHERE flags = 0 AND dirty = false AND partial = false]],
     { 'bytes', 'records' },
-    { { bytes = bytes, records = plain } }
+    { { bytes = #HeaderPayload + sum[for index in plain => #payloadAt(index)], records = #plain + 1 } }
   )
 end
 
@@ -707,10 +677,9 @@ do
   scan(`scene scan: {NifCount} nodes, every column`, nodes, request(nodes.columns), scene)
   scan(`scene scan: {NifCount} nodes, their names and parents`, nodes, request { 'index', 'name', 'parent' }, scene)
 
-  local branches = {}
-  for branch = 1, Branches do
-    table.insert(branches, { name = string.format('branch %02d', branch), world_x = branch })
-  end
+  local branches = [
+    for branch in range(1, Branches) => { name = string.format('branch %02d', branch), world_x = branch }
+  ]
 
   query(
     `scene query: the {Branches} nodes under the root, among {NifCount}`,
@@ -719,10 +688,9 @@ do
     branches
   )
 
-  local shapes = {}
-  for index = NifCount - 1, NifCount - 20, -1 do
-    table.insert(shapes, { index = index, name = every[index + 1].name })
-  end
+  local shapes = [
+    for index in range(NifCount - 1, NifCount - 20, -1) => { index = index, name = every[index + 1].name }
+  ]
 
   query(
     'scene query: a page of shapes, from the end',
