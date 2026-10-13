@@ -197,7 +197,7 @@ local function plan(
         candidates = if vfs:contains(exact) then { exact } :: { string } else {}
       else
         local file = vfs:getFile(exact)
-        candidates = if file ~= nil then { { key=exact, file=file } } :: { Entry } else {}
+        candidates = if file ~= nil then { { key = exact, file = file } } :: { Entry } else {}
       end
     else
       candidates = {}
@@ -343,29 +343,39 @@ end
 function exports.provider(vfs: Vfs): Provider
   local indexedRevision = -1
   local plan: LookupPlan? = nil
-  local stemFirst: { [string]: string }, stemDuplicates: { [string]: { string } } = {}, {}
+
+  -- The files by stem, as of the revision indexed: the first key with each stem, and every key
+  -- of a stem that several have, in key order.
+  local stemFirst: { [string]: string } = {}
+  local stemDuplicates: { [string]: { string } } = {}
 
   local function ensureStemIndex()
     local revision = vfs:revision()
     if revision == indexedRevision then return end
-    stemFirst = {}
-    stemDuplicates = {}
+
+    stemFirst, stemDuplicates = {}, {}
     for _, key in vfs:keysStartingWith('') do
       local stem = logicalStem(key)
       local first = stemFirst[stem]
-      if first == nil then
+      if not first then
         stemFirst[stem] = key
+        continue
+      end
+
+      local bucket = stemDuplicates[stem]
+      if bucket then
+        table.insert(bucket, key)
       else
-        local bucket = stemDuplicates[stem]
-        if bucket == nil then bucket = { first, key }; stemDuplicates[stem] = bucket
-        else bucket[#bucket+1] = key end
+        stemDuplicates[stem] = { first, key }
       end
     end
+
     indexedRevision = revision
   end
 
   local function lookup(column: string, value: unknown, request: Request): ScanResult?
     if column ~= 'stem' or type(value) ~= 'string' then return nil end
+
     ensureStemIndex()
     local current = plan
     if not current or not planned(current, request) then
@@ -394,7 +404,7 @@ function exports.provider(vfs: Vfs): Provider
 
   return {
     columns = Columns,
-    indexes = { stem=true },
+    indexes = { stem = true },
     iterate = function(request: Request): Iterator
       return fileIterator(vfs, request)
     end,

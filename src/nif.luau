@@ -109,9 +109,14 @@ local function recordIterator(nif: Nif, request: Request, volatile: boolean): It
         value = nif:record(index) :: { [string]: unknown }?
       else
         local into = scratch[kind]
-        if into == nil then into = {}; scratch[kind] = into end
+        if not into then
+          into = {}
+          scratch[kind] = into
+        end
+
         value = nif:read(index, into) :: { [string]: unknown }?
       end
+
       local candidate = if value then value.name else nil
       if type(candidate) == 'string' then name = candidate end
       if onlyName and name ~= onlyName then return nil end
