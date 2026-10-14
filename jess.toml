@@ -5,7 +5,7 @@ id = "org.dreamweave.dreamwind-sql"
 version = "0.1.1"
 jess_api = "1"
 include = ["src", "bench", "README.md"]
-tests = ["tests/run.luau", "tests/style.luau"]
+tests = ["tests/run.jsl", "tests/style.jsl"]
 
 [dependencies]
 "org.dreamweave.tes3" = "0.1"
@@ -13,10 +13,10 @@ tests = ["tests/run.luau", "tests/style.luau"]
 "org.dreamweave.jessql" = "0.1.1"
 
 [modules]
-"@dreamwind-sql" = "src/init.luau"
-"@dreamwind-sql/vfs" = "src/vfs.luau"
-"@dreamwind-sql/tes3" = "src/tes3.luau"
-"@dreamwind-sql/nif" = "src/nif.luau"
+"@dreamwind-sql" = "src/init.jsl"
+"@dreamwind-sql/vfs" = "src/vfs.jsl"
+"@dreamwind-sql/tes3" = "src/tes3.jsl"
+"@dreamwind-sql/nif" = "src/nif.jsl"
 
 [[layer]]
 id = "dream.sql"

@@ -1,5 +1,5 @@
 -- An indexed join of a VFS built here against a NIF's records. Run from the folder the packages are
--- in: jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/cross-domain.luau
+-- in: jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/cross-domain.jsl
 local sql=require('@dreamwind-sql')
 local vfsmod=require('@vfs')
 local nifmod=require('@nif')

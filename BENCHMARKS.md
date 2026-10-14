@@ -1,6 +1,6 @@
 # dreamwind-sql benchmarks
 
-`bench/bench.luau` times the adapter through its public API: prepared queries over a VFS of 50,000
+`bench/bench.jsl` times the adapter through its public API: prepared queries over a VFS of 50,000
 files, a plugin of 20,001 records, and a NIF of 4,096 records and its scene, and under them the
 provider scans and stem lookups with JessQL left out. A `query` row is the adapter and the engine
 together; a `scan` or `lookup` row is the adapter alone. The VFS is a stand-in built in the bench,
@@ -38,7 +38,7 @@ a second each, with a full collection before each batch.
 
 ```sh
 flock $HOME/.cache/agents-bench.lock systemd-run --user --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
-  target/l3i2/jess run --package jpk/dreamwind-sql --package-path jpk jpk/dreamwind-sql/bench/bench.luau
+  target/l3i2/jess run --package jpk/dreamwind-sql --package-path jpk jpk/dreamwind-sql/bench/bench.jsl
 ```
 
 | Workload | Before | After | | Before, raised | After, raised | |

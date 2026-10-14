@@ -1,7 +1,7 @@
 --!strict
 -- The adapter, timed from Luau: queries over a VFS, a plugin, and a NIF, and the provider scans
 -- and lookups under them, with JessQL left out. Run by `jess run --package dreamwind-sql
--- --package-path . dreamwind-sql/bench/bench.luau [filter]` from the folder the packages are in,
+-- --package-path . dreamwind-sql/bench/bench.jsl [filter]` from the folder the packages are in,
 -- on a release build. Prints one line per workload: its name, a tab, and the seconds one call
 -- takes. Every workload's result is checked outside the time, before the first batch and after
 -- the last, by a checksum of its rows against the rows the data built here must give. A path that

@@ -80,22 +80,22 @@ revision changes.
 
 ## Running the benchmarks
 
-`bench/bench.luau` is the measured one: it times queries, scans, and lookups over a VFS stand-in, a
+`bench/bench.jsl` is the measured one: it times queries, scans, and lookups over a VFS stand-in, a
 plugin, and a NIF it builds, checks every workload's rows, and prints a line for each. It needs
 only what the package depends on, and takes an optional filter on the workload names. Run it from
 the folder the packages are checked out in.
 
 ```sh
-jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/bench.luau
-jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/bench.luau 'vfs scan'
+jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/bench.jsl
+jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/bench.jsl 'vfs scan'
 ```
 
 The three older scripts each run one query a few times and print what it took. Each takes an
-optional row count. `bench/vfs.luau` and `bench/cross-domain.luau` build a real VFS to query, so
+optional row count. `bench/vfs.jsl` and `bench/cross-domain.jsl` build a real VFS to query, so
 they name the `vfs` package outright; `--package-path .` finds what the packages depend on.
 
 ```sh
-jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/nif.luau 100000
-jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/vfs.luau 50000
-jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/cross-domain.luau 50000
+jess run --package dreamwind-sql --package-path . dreamwind-sql/bench/nif.jsl 100000
+jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/vfs.jsl 50000
+jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/cross-domain.jsl 50000
 ```

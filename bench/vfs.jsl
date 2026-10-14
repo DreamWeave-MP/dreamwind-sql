@@ -1,5 +1,5 @@
 -- A prefix scan, ordered and limited, over a VFS built here. Run from the folder the packages are
--- in: jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/vfs.luau
+-- in: jess run --package dreamwind-sql --package vfs --package-path . dreamwind-sql/bench/vfs.jsl
 local sql = require('@dreamwind-sql')
 local vfsmod = require('@vfs')
 
