@@ -37,7 +37,7 @@ local Columns = table.freeze {
 }
 
 --- What a scan holds a record to: each of these columns, equal to a value of its kind.
-local Equalities: { [string]: util.Kind } = table.freeze {
+local Equalities: { [string]: util.Kind } = table.freeze({
   index = 'whole',
   type = 'string',
   id = 'string',
@@ -45,7 +45,7 @@ local Equalities: { [string]: util.Kind } = table.freeze {
   size = 'number',
   dirty = 'boolean',
   partial = 'boolean',
-}
+} :: { [string]: util.Kind })
 
 --- A lazy scan of a plugin's records. `volatile` has it fill one row table for every record,
 --- which only a request that allows it may be answered with.

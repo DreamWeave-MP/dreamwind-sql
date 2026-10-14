@@ -237,7 +237,7 @@ local function rowsFor(vfs: Vfs, request: Request): ScanResult
   local candidates, rowOf, handledWhere, ordered, limit, handledConstraints = plan(vfs, request, false)
 
   -- Room for the rows a limit allows, as far as there are candidates to make them of.
-  local out: { Row } = if limit then table.create(math.min(limit, #candidates)) else {}
+  local out: { Row } = if limit then table.create(math.min(limit, #candidates)) :: { Row } else {}
   local count = 0
   for _, item in candidates do
     local row = rowOf(item)
@@ -263,7 +263,8 @@ end
 
 local function fileIterator(vfs: Vfs, request: Request): Iterator
   local volatile = request.allowVolatileRows == true
-  local candidates, rowOf, handledWhere, ordered, _, handledConstraints = plan(vfs, request, volatile)
+  local candidates: { string } | { Entry }, rowOf, handledWhere, ordered, _, handledConstraints =
+    plan(vfs, request, volatile)
   local position, count = 0, #candidates
 
   -- A list with nothing to read by index may still have items for a `for`, as a scan reads it.
@@ -314,7 +315,7 @@ local Empty = table.freeze {}
 local function lookupPlan(vfs: Vfs, request: Request): LookupPlan
   local make = rowMaker(vfs, request, false)
   local _, _, handledWhere, handledConstraints, matchesPath = pathPlan(request)
-  local columns: { [unknown]: unknown } = table.clone(request.columns or Empty)
+  local columns = table.clone(request.columns or Empty) :: { [unknown]: unknown }
   local constraints: { [unknown]: util.Constraint } = {}
   local columnCount, constraintCount = 0, 0
   for _ in columns do
@@ -399,11 +400,8 @@ function exports.provider(vfs: Vfs): Provider
     if column ~= 'stem' or type(value) ~= 'string' then return nil end
 
     ensureStemIndex()
-    local current = plan
-    if not current or not planned(current, request) then
-      current = lookupPlan(vfs, request)
-      plan = current
-    end
+    local current = if plan and planned(plan, request) then plan else lookupPlan(vfs, request)
+    plan = current
 
     local { make, matchesPath, handledWhere, handledConstraints } = current
     local out: { Row } = {}

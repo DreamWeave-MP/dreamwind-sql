@@ -63,15 +63,15 @@ local SceneNodeColumns = table.freeze {
 }
 
 --- What a scan holds a record to: each of these columns, equal to a value of its kind.
-local RecordEqualities: { [string]: util.Kind } = table.freeze {
+local RecordEqualities: { [string]: util.Kind } = table.freeze({
   index = 'whole',
   type = 'string',
   name = 'string',
   decoded = 'boolean',
-}
+} :: { [string]: util.Kind })
 
 --- What a scan holds a scene node to.
-local SceneNodeEqualities: { [string]: util.Kind } = table.freeze {
+local SceneNodeEqualities: { [string]: util.Kind } = table.freeze({
   index = 'whole',
   source = 'number',
   record_type = 'string',
@@ -80,7 +80,7 @@ local SceneNodeEqualities: { [string]: util.Kind } = table.freeze {
   subtree_end = 'number',
   billboard = 'boolean',
   visibility = 'string',
-}
+} :: { [string]: util.Kind })
 
 --- A lazy scan of a NIF's records. `volatile` has it fill one row table for every record, which
 --- only a request that allows it may be answered with.

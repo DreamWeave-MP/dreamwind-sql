@@ -201,7 +201,7 @@ end
 --- make, so room for a limit's rows is made only as far as there are rows.
 function exports.drain(iterator: Iterator, request: Request, capacity: number): ScanResult
   local limit = exports.limit(request, iterator.handledWhere, iterator.ordered)
-  local rows: { Row } = if limit then table.create(math.min(limit, capacity)) else {}
+  local rows: { Row } = if limit then table.create(math.min(limit, capacity)) :: { Row } else {}
   local count = 0
   while true do
     local row = iterator.next()
