@@ -1,5 +1,4 @@
 --!strict
---!native
 
 local util = require('./util')
 
@@ -71,6 +70,7 @@ end
 
 --- Where a key's name starts, and where the dot before its extension is: 0 for a name with no
 --- dot past its first byte, which has no extension. One walk back from the end finds both.
+@native
 local function split(path: string): (number, number)
   local dot = 0
   for index = #path, 1, -1 do
@@ -84,6 +84,7 @@ local function split(path: string): (number, number)
 end
 
 --- A key's stem: its name, up to the dot before its extension.
+@native
 local function logicalStem(path: string): string
   local start, dot = split(path)
   return string.sub(path, start, if dot == 0 then -1 else dot - 1)
@@ -124,7 +125,7 @@ local function pathPlan(request: Request): (string?, string?, boolean, boolean, 
 
   local matches: ((key: string) -> boolean)? = nil
   if #paths + #prefixes > 0 then
-    matches = function(key: string): boolean
+    matches = @native function(key: string): boolean
       return all[for path in paths => key == path]
         and all[for start in prefixes => string.sub(key, 1, #start) == start]
     end
@@ -148,6 +149,7 @@ local function rowMaker(
   local wantArchivePath, wantArchiveName = wanted.archive_path, wanted.archive_name
   local needsFile = wantPhysicalPath or wantSize or wantLoose or wantArchive or wantArchivePath or wantArchiveName
 
+  @native
   local function make(key: string, given: File?): Row?
     local file = given
     if needsFile and not file then
@@ -223,6 +225,7 @@ local function plan(
   end
 
   -- `keyOnly` chose what the candidates are: keys, or entries that carry their file.
+  @native
   local function rowOf(item: string | Entry): Row?
     local key = if keyOnly then item :: string else (item :: Entry).key
     if matchesPath and not matchesPath(key) then return nil end
@@ -233,6 +236,7 @@ local function plan(
   return candidates, rowOf, handledWhere, ordered, limit, handledConstraints
 end
 
+@native
 local function rowsFor(vfs: Vfs, request: Request): ScanResult
   local candidates, rowOf, handledWhere, ordered, limit, handledConstraints = plan(vfs, request, false)
 
@@ -273,6 +277,7 @@ local function fileIterator(vfs: Vfs, request: Request): Iterator
     count = #candidates
   end
 
+  @native
   local function nextRow(): Row?
     while position < count do
       position += 1
@@ -341,6 +346,7 @@ local function lookupPlan(vfs: Vfs, request: Request): LookupPlan
 end
 
 --- Whether a request says what the one a plan was worked out for said.
+@native
 local function planned(plan: LookupPlan, request: Request): boolean
   if request.whereComplete ~= plan.whereComplete then return false end
 
@@ -372,6 +378,7 @@ function exports.provider(vfs: Vfs): Provider
   local stemFirst: { [string]: string } = {}
   local stemDuplicates: { [string]: { string } } = {}
 
+  @native
   local function ensureStemIndex()
     local revision = vfs:revision()
     if revision == indexedRevision then return end
@@ -396,6 +403,7 @@ function exports.provider(vfs: Vfs): Provider
     indexedRevision = revision
   end
 
+  @native
   local function lookup(column: string, value: unknown, request: Request): ScanResult?
     if column ~= 'stem' or type(value) ~= 'string' then return nil end
 
@@ -426,7 +434,7 @@ function exports.provider(vfs: Vfs): Provider
     columns = Columns,
 
     -- The keys are walked, as a scan walks them: a list need answer nothing but a `for`.
-    count = function(): number
+    count = @native function(): number
       local keys = 0
       for _ in vfs:keys() do
         keys += 1
