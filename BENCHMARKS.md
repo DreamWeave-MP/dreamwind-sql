@@ -137,3 +137,74 @@ in place of `bytes.compare` was within a tenth, and within the noise on one of i
 here, because the old code answers it wrong: it listed the files rising and called them ordered, so
 the bench's check of the rows would refuse it. It is right now, and is a walk of the VFS's keys
 from the end.
+
+## Which modules are native, and why
+
+Jess compiles to machine code only what is marked (`--!native` on a module, `@native` on one
+function), and every load pays for what is marked. A module carries `--!native` when a row below
+spends its time there and the module is small (12 KB or less); a larger module carries `@native`
+on the functions the row spends its time in, and nothing else.
+
+Measured 2026-10-15 with `jess 0.1.0`, the verified release build of jess `07c38cb` on l3i
+2.0.3, on the i7-10870H, the one-minute load 1.08 and 1.30 at the start of the two
+sessions. In each session the bench ran alternately on this package and on a copy of it with
+every module marked, three fresh runs of `bench/bench.jsl` each, every run's row the median of
+its batches; a column is the median of the three, and a ratio is against the all-marked runs of
+the same session. Which functions a row spends its time in comes from `jess run --profile` of
+that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
+--package-path jpk` of a script that only requires `@dreamwind-sql`, the two sides alternating, the
+median of five each after one warm-up.
+
+| Requiring `@dreamwind-sql` | All marked | This state |
+| --- | ---: | ---: |
+| Unmarked | 0.155 s | 0.158 s |
+| Final | 0.157 s | 0.157 s |
+
+| Row | All marked (ms) | Unmarked / all marked | Final (ms) | Final / all marked |
+| --- | ---: | ---: | ---: | ---: |
+| vfs query: a page of a prefix, from the end | 0.02155 | **1.563×** | 0.02158 | 1.001× |
+| vfs query: a page of every key, from the end | 0.01691 | **1.420×** | 0.01730 | 1.023× |
+| vfs query: 25000 keys under a prefix | 25.94 | **1.445×** | 25.28 | 0.975× |
+| vfs query: 50000 files counted | 1.862 | **1.212×** | 1.820 | 0.977× |
+| vfs query: 50000 files, those in archives counted by archive | 31.17 | **1.197×** | 31.51 | 1.011× |
+| vfs scan: 25000 keys under a prefix | 13.74 | **1.831×** | 13.66 | 0.994× |
+| vfs scan: 50000 keys and their stems | 16.33 | **2.198×** | 16.69 | 1.022× |
+| vfs scan: 50000 files, every column | 61.83 | **1.336×** | 60.70 | 0.982× |
+| vfs lookup: the stem index of 50000 keys, built | 19.17 | **1.793×** | 18.54 | 0.967× |
+| vfs lookup: 1000 stems of two files each, the last one's rows kept | 1.217 | **1.476×** | 1.200 | 0.986× |
+| join query: a page of files joined to NIF records by stem, from the end | 9.123 | **1.358×** | 8.809 | 0.966× |
+| join query: 4032 NIF records joined to their two files each | 9.361 | **1.482×** | 9.243 | 0.987× |
+| tes3 scan: 20001 records, every column | 21.51 | **1.199×** | 21.33 | 0.991× |
+| tes3 scan: 20001 records, index and type | 4.661 | **1.896×** | 4.506 | 0.967× |
+| tes3 query: 2500 records of one type, with their ids | 3.368 | **1.362×** | 3.235 | 0.961× |
+| tes3 query: 20001 records counted | 0.00036 | 0.986× | 0.00036 | 0.986× |
+| tes3 query: 20001 records counted by type | 4.981 | **1.631×** | 4.751 | 0.954× |
+| tes3 query: one record by its type and id, near the end | 1.959 | **1.606×** | 1.912 | 0.976× |
+| tes3 query: one record by its id, among 20001 | 5.236 | **1.358×** | 5.095 | 0.973× |
+| tes3 query: a page of flagged records, from the end | 0.05121 | **1.428×** | 0.05022 | 0.981× |
+| tes3 query: 20001 records, the sizes of the unflagged summed | 10.63 | **1.381×** | 10.35 | 0.974× |
+| nif query: a page of one type, from the end | 0.1083 | **1.624×** | 0.1056 | 0.975× |
+| nif query: 4096 records counted | 0.2078 | **1.328×** | 0.2067 | 0.995× |
+| nif query: 4096 records counted by type | 0.8011 | **1.497×** | 0.7952 | 0.993× |
+| nif scan: 4096 records, index and type | 0.7557 | **1.640×** | 0.7535 | 0.997× |
+| nif scan: 4096 records, every column | 2.699 | **1.236×** | 2.614 | 0.968× |
+| nif query: one record by its name, among 4096 | 1.572 | **1.371×** | 1.538 | 0.978× |
+| scene scan: 4096 nodes, every column | 1.861 | **1.356×** | 1.823 | 0.980× |
+| scene scan: 4096 nodes, their names and parents | 0.7665 | **1.980×** | 0.7663 | 1.000× |
+| scene query: 4096 nodes counted | 0.00026 | **1.097×** | 0.00020 | 0.793× |
+| scene query: the 63 nodes under the root, among 4096 | 0.1896 | **2.207×** | 0.1865 | 0.984× |
+| scene query: a page of shapes, from the end | 0.01378 | **1.295×** | 0.01329 | 0.965× |
+| scene query: 4032 visible shapes counted, the furthest found | 0.7079 | **1.904×** | 0.6904 | 0.975× |
+
+What carries the directive (every module and function here is one a row spends its time in,
+unmarked):
+
+- Whole: `nif`, `tes3`, `util`.
+- `vfs`, by function: `split`, `logicalStem`, a closure at line 128, `make`, `rowOf`, `rowsFor`,
+  `nextRow`, `planned`, `ensureStemIndex`, `lookup`, `count`.
+- Unmarked: `init`.
+
+Unmarked, requiring `@dreamwind-sql` cost what all marked does (0.158 s against 0.156 s), while
+the queries, scans, and joins over the VFS and NIF tables ran 1.2x to 2.2x slower. So nearly all
+of it stays marked; only the entry, and what of `vfs` no row reaches, load as bytecode. No row
+is more than 5% slower than all marked.
