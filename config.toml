@@ -1,0 +1,40 @@
+base_url = "https://dreamweave-mp.github.io/dreamwind-sql"
+title = "dreamwind-sql"
+description = "Relational views over TES3 plugins, NIF models and an OpenMW VFS for JessQL: the adapter, with no engine semantics of its own."
+compile_sass = true
+build_search_index = true
+generate_feeds = true
+feed_filenames = ["atom.xml"]
+taxonomies = [{ name = "tags", feed = false }]
+
+[search]
+index_format = "fuse_json"
+include_title = true
+include_description = true
+include_content = true
+truncate_content_length = 400
+
+[markdown]
+highlighting = { theme = "dracula-soft" }
+insert_anchor_links = "right"
+smart_punctuation = true
+
+[slugify]
+paths = "safe"
+
+[link_checker]
+skip_prefixes = ["https://github.com/", "https://www.nexusmods.com/"]
+
+[extra]
+github_username = "DreamWeave-MP"
+github_project = "dreamwind-sql"
+logo_text = "dreamwind-sql"
+palette = "frost"
+menu_items = [
+    { name = "dreamwind-sql", url = "@/home/index.md" },
+    { name = "Network", url = "@/network.md" },
+]
+
+[extra.comments]
+enabled = false
+category = "General"
