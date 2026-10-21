@@ -2,7 +2,7 @@
 --!native
 
 local bytes = require('@dream/bytes')
-local tes3 = require('@tes3')
+local tes3 = require('@esm')
 local util = require('./util')
 
 local exports = {}

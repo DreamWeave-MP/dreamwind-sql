@@ -8,7 +8,7 @@ include = ["src", "bench", "README.md", "tests"]
 tests = ["tests/run.jsl", "tests/style.jsl"]
 
 [dependencies]
-"org.dreamweave.tes3" = "0.1"
+"org.dreamweave.esm" = "0.1"
 "org.dreamweave.nif" = "0.1"
 "org.dreamweave.jessql" = "0.1.1"
 
@@ -20,5 +20,5 @@ tests = ["tests/run.jsl", "tests/style.jsl"]
 
 [[layer]]
 id = "dream.sql"
-requires = ["jessql.core", "tes3.core", "nif.core"]
+requires = ["jessql.core", "esm.core", "nif.core"]
 exports = ["@dreamwind-sql", "@dreamwind-sql/vfs", "@dreamwind-sql/tes3", "@dreamwind-sql/nif"]
