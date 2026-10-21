@@ -1,0 +1,53 @@
+{
+  "schema_version": "3",
+  "document": "lock",
+  "project": "24902fa8-2605-49b1-b278-5eb59a0f39b8",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "0.1.1",
+      "locked_from": "15b7381d246b2a09d3730639bb22e81810cccb90",
+      "artifacts": [
+        {
+          "id": "jpk",
+          "format": "jpk",
+          "filename": "org.dreamweave.dreamwind-sql-0.1.1.jpk",
+          "media_type": "application/vnd.jess.jpk",
+          "size": 63184,
+          "digests": {
+            "sha256": "09a4e4f6a72a5d08d0b9e2408e11ca8b034eb5e0b3890d79333522830d496f77"
+          },
+          "jess": {
+            "package": "org.dreamweave.dreamwind-sql",
+            "jess_api": "1",
+            "content_digest": "4efdf68c3ef4b95b52bfc7ad9b62c2139cf1e00d2d6f4344866f21517cb1804a",
+            "dependencies": {
+              "org.dreamweave.esm": "0.1",
+              "org.dreamweave.jessql": "0.1.1",
+              "org.dreamweave.nif": "0.1"
+            }
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "dreamwind-sql",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
