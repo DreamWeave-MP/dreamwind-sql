@@ -5,20 +5,40 @@ id = "org.dreamweave.dreamwind-sql"
 version = "0.1.1"
 jess_api = "1"
 include = ["src", "bench", "README.md", "tests"]
-tests = ["tests/run.jsl", "tests/style.jsl"]
+tests = ["tests/run.jsl", "tests/load.jsl", "tests/style.jsl"]
 
 [dependencies]
 "org.dreamweave.esm" = "0.1"
 "org.dreamweave.nif" = "0.1"
 "org.dreamweave.jessql" = "0.1.1"
+"org.dreamweave.openmw-config" = "4.2"
+"org.dreamweave.openmw-install" = "0.1"
 
 [modules]
 "@dreamwind-sql" = "src/init.jsl"
 "@dreamwind-sql/vfs" = "src/vfs.jsl"
 "@dreamwind-sql/tes3" = "src/tes3.jsl"
 "@dreamwind-sql/nif" = "src/nif.jsl"
+"@dreamwind-sql/content" = "src/content.jsl"
+"@dreamwind-sql/commands" = "src/commands.jsl"
+"@dreamwind-sql/cli" = "src/cli.jsl"
 
 [[layer]]
 id = "dream.sql"
 requires = ["jessql.core", "esm.core", "nif.core"]
-exports = ["@dreamwind-sql", "@dreamwind-sql/vfs", "@dreamwind-sql/tes3", "@dreamwind-sql/nif"]
+exports = ["@dreamwind-sql", "@dreamwind-sql/vfs", "@dreamwind-sql/tes3", "@dreamwind-sql/nif", "@dreamwind-sql/content"]
+
+# The command layer: a query over a load order found as Jess's other tools find one, typed in
+# `commands` and read from argv in `cli`. The tables above stay usable without it.
+[[layer]]
+id = "dream.sql.commands"
+requires = ["dream.sql", "openmw-config.core", "openmw-install.core"]
+exports = ["@dreamwind-sql/commands", "@dreamwind-sql/cli"]
+
+# `jess package run --trusted --package <dreamwind-sql> -- "SELECT ..."`: it reads the load order
+# and the files it is given, and prints the result.
+[targets.dreamwind-sql]
+kind = "command"
+command = "dreamwind-sql"
+entry = "src/main.jsl"
+capabilities = ["filesystem.read", "process.environment", "process.stdio"]

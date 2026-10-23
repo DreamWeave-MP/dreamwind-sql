@@ -1,0 +1,116 @@
+--!strict
+-- dreamwind-sql's commands: a typed request in, a typed result out. Nothing here prints, reads
+-- argv, or decides an exit status; `cli.jsl` does that.
+--
+-- A query sees whatever its request makes available: a load order, found as Jess's other tools
+-- find one, as `content.plugins`, `content.records` and `vfs.files`; a plugin named on its own as
+-- `tes3.records`; a NIF as `nif.records` and `nif.scene_nodes`. Every table is read only when a
+-- query reaches it, so naming a load order costs nothing until a query reads from it.
+local content = require './content'
+local engine = require '@jessql/engine'
+local esm = require '@esm'
+local fs = require '@dream/fs'
+local nif = require '@nif'
+local nifTables = require './nif'
+local openmw = require '@openmw-install'
+local openmwConfig = require '@openmw-config'
+local tes3Tables = require './tes3'
+local vfsTables = require './vfs'
+
+export type QueryRequest = {
+  --- The query.
+  sql: string,
+  --- The openmw.cfg whose load order is queried, or the folder holding it. Without it, the one
+  --- OPENMW_CONFIG names, else OpenMW's own; a request that names a plugin or a NIF and finds no
+  --- load order queries those alone.
+  config: string?,
+  --- What `config` falls back to, standing in for this process's (a test passes `{}`).
+  fallbacks: openmwConfig.Fallbacks?,
+  --- A plugin to query as `tes3.records`.
+  plugin: string?,
+  --- A NIF to query as `nif.records` and `nif.scene_nodes`.
+  nif: string?,
+}
+
+export type QueryResult = {
+  columns: { string },
+  rows: { engine.Row },
+  --- The openmw.cfg whose load order the query could read, nil when it had none.
+  configuration: string?,
+}
+
+local commands = {}
+
+--- The bytes of the file at `path`, raising why when there are none.
+local function bytesOf(path: string): buffer
+  local data, problem = fs.readFile(path)
+  if not data then error(problem, 0) end
+
+  return data
+end
+
+--- A VFS that builds itself the first time a query asks it anything, for `vfs.files`.
+local function lazyVfs(context: openmw.Context): vfsTables.Vfs
+  local built: vfsTables.Vfs? = nil
+
+  local function vfs(): vfsTables.Vfs
+    if not built then built = (context:vfs() :: unknown) :: vfsTables.Vfs end
+
+    return built :: vfsTables.Vfs
+  end
+
+  return {
+    revision = function(_self): number return vfs():revision() end,
+    contains = function(_self, path: string): boolean return vfs():contains(path) end,
+    getFile = function(_self, path: string) return vfs():getFile(path) end,
+    keys = function(_self, limit: number?, descending: boolean?): { string }
+      return vfs():keys(limit, descending)
+    end,
+    entries = function(_self, limit: number?, descending: boolean?) return vfs():entries(limit, descending) end,
+    keysStartingWith = function(_self, prefix: string, limit: number?, descending: boolean?): { string }
+      return vfs():keysStartingWith(prefix, limit, descending)
+    end,
+    pathsStartingWith = function(_self, prefix: string, limit: number?, descending: boolean?)
+      return vfs():pathsStartingWith(prefix, limit, descending)
+    end,
+  }
+end
+
+--- The load order's tables in `db`, when the request names one or one is found. Nil and why when
+--- none is, which only a request naming no file of its own is refused for.
+local function loadOrder(db: engine.Database, request: QueryRequest): (string?, string?)
+  if request.config == '' then return nil, 'an empty configuration names none' end
+
+  local path, problem = openmwConfig.locate(request.config, request.fallbacks)
+  if not path then return nil, problem end
+
+  local context = openmw.new(path, { tokens = openmwConfig.userFolders() })
+  content.register(db, [for entry in context:content() => { name = entry.name, path = entry.path }])
+  vfsTables.register(db, lazyVfs(context))
+  return path, nil
+end
+
+--- Runs `request.sql`. Nil and why when there is nothing to query, a file can't be read, or the
+--- query can't be run.
+function commands.query(request: QueryRequest): (QueryResult?, string?)
+  local db = engine.new()
+  local files = request.plugin ~= nil or request.nif ~= nil
+  local configuration, missing = loadOrder(db, request)
+  if not configuration and (request.config or not files) then return nil, missing end
+
+  -- A plugin or a NIF that isn't one raises as it is parsed, and so does a query the engine can't
+  -- read or run; each is the request's to fix, so each comes back as why.
+  local ran, result = pcall(function(): engine.Result
+    if request.plugin then tes3Tables.register(db, esm.open(bytesOf(request.plugin))) end
+    if request.nif then nifTables.register(db, nif.open(bytesOf(request.nif))) end
+
+    return db:query(request.sql)
+  end)
+
+  if not ran then return nil, (string.gsub(tostring(result), '^[^\n]-:%d+: ', '')) end
+
+  local answer = result :: engine.Result
+  return { columns = answer.columns, rows = answer.rows, configuration = configuration }, nil
+end
+
+return table.freeze(commands)

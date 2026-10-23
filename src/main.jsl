@@ -1,0 +1,6 @@
+--!strict
+-- The dreamwind-sql command target: its arguments go to the command line, whose exit status is
+-- the command's.
+local cli = require '@dreamwind-sql/cli'
+
+return cli.run({ ... })

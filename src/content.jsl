@@ -1,0 +1,247 @@
+--!strict
+-- A load order's content files as two tables: `content.plugins`, one row for each file in load
+-- order, and `content.records`, every record of every file with the file it is in. A file is read
+-- and parsed only when a query reaches it, and let go when a scan of the records moves past it, so
+-- a query over one plugin reads that plugin alone and a scan of them all holds one at a time.
+local engine = require '@jessql/engine'
+local fs = require '@dream/fs'
+local tes3 = require '@esm'
+local tes3Records = require './tes3'
+local util = require './util'
+
+--- A file of the load order: the name openmw.cfg's `content=` gives it, and where it was found,
+--- nil when no data folder has it.
+export type Entry = { name: string, path: string? }
+
+type Database = util.Database
+type Request = util.Request
+type Row = util.Row
+type ScanResult = util.ScanResult
+type Iterator = util.Iterator
+
+--- The engine's own provider: `iterate` hands the rows over one at a time, and `count` is how many
+--- there are, which answers a bare COUNT(*).
+export type Provider = engine.Provider
+
+--- A content file's columns: `kind` is what OpenMW loads it as, and `records` how many records an
+--- `esm` has, NULL for any other kind and for a file no data folder has.
+local PluginColumns = table.freeze { 'index', 'name', 'kind', 'path', 'found', 'records' }
+
+local PluginEqualities: { [string]: util.Kind } = table.freeze({
+  index = 'whole',
+  name = 'string',
+  kind = 'string',
+  path = 'string',
+  found = 'boolean',
+  records = 'number',
+} :: { [string]: util.Kind })
+
+-- What OpenMW loads a content file as, by its extension, as `World::loadContentFiles`
+-- (apps/openmw/mwworld/worldimp.cpp) picks a loader: the ESM loader for these, the Lua scripts
+-- loader for `.omwscripts`, and none for anything else.
+local Kinds: { [string]: string } = table.freeze({
+  esm = 'esm',
+  esp = 'esm',
+  omwgame = 'esm',
+  omwaddon = 'esm',
+  project = 'esm',
+  omwscripts = 'scripts',
+} :: { [string]: string })
+
+local function kindOf(name: string): string
+  return Kinds[string.lower(string.match(name, '%.([^.]+)$') or '')] or 'unknown'
+end
+
+--- A record's columns, and the two that say which file it is in: `plugin` is that file's name and
+--- `load_index` its place in the load order.
+local RecordColumns = table.freeze {
+  'load_index',
+  'plugin',
+  'index',
+  'type',
+  'id',
+  'flags',
+  'size',
+  'dirty',
+  'partial',
+}
+
+local RecordEqualities: { [string]: util.Kind } = table.freeze({
+  load_index = 'whole',
+  plugin = 'string',
+  index = 'whole',
+  type = 'string',
+  id = 'string',
+  flags = 'number',
+  size = 'number',
+  dirty = 'boolean',
+  partial = 'boolean',
+} :: { [string]: util.Kind })
+
+--- The parsed ESM file `entry` names, nil for one no data folder has and for a content file of
+--- another kind. A file that can't be read or parsed fails the query that reached it, named.
+local function open(entry: Entry): tes3.Plugin?
+  local path = entry.path
+  if not path or kindOf(entry.name) ~= 'esm' then return nil end
+
+  local data, problem = fs.readFile(path)
+  if not data then error(`content: {entry.name}: {problem}`, 0) end
+
+  -- `tes3.open` raises on bytes that aren't a TES3 file; the query's error names the file.
+  local opened, plugin = pcall(tes3.open, data, nil)
+  if not opened then error(`content: {entry.name}: {plugin}`, 0) end
+
+  return plugin
+end
+
+--- The two tables over `entries`, in load order. How many records each file has is kept once a
+--- file has been counted.
+local function providers(entries: { Entry }): (Provider, Provider)
+  local counts: { [number]: number | false } = {}
+
+  local function recordsIn(position: number): number?
+    local known = counts[position]
+    if known ~= nil then return known or nil end
+
+    local plugin = open(entries[position])
+    local count = if plugin then plugin:count() else nil
+    counts[position] = count or false
+    return count
+  end
+
+  local function pluginRows(request: Request, volatile: boolean): Iterator
+    local wanted = util.columns(request)
+    local template = util.template(wanted, PluginColumns)
+    local onlyName, onlyKind = util.text(request, 'name'), util.text(request, 'kind')
+    local onlyPath = util.text(request, 'path')
+    local onlyFound, onlyRecords = util.flag(request, 'found'), util.number(request, 'records')
+
+    local function build(index: number): Row?
+      local entry = entries[index + 1]
+      if onlyName and entry.name ~= onlyName then return nil end
+      if onlyPath and entry.path ~= onlyPath then return nil end
+
+      local kind = kindOf(entry.name)
+      if onlyKind and kind ~= onlyKind then return nil end
+
+      local found = entry.path ~= nil
+      if onlyFound ~= nil and found ~= onlyFound then return nil end
+
+      local records: number? = nil
+      if wanted.records or onlyRecords then
+        records = recordsIn(index + 1)
+        if onlyRecords and records ~= onlyRecords then return nil end
+      end
+
+      local row = if volatile then template else table.clone(template)
+      if wanted.index then row.index = index end
+      if wanted.name then row.name = entry.name end
+      if wanted.kind then row.kind = kind end
+      if wanted.path then row.path = entry.path end
+      if wanted.found then row.found = found end
+      if wanted.records then row.records = records end
+      return row
+    end
+
+    local function count(): number return #entries end
+
+    return util.numbered(request, util.equalities(request, PluginEqualities), volatile, count, build)
+  end
+
+  local plugins: Provider = {
+    columns = PluginColumns,
+    count = function(): number return #entries end,
+    iterate = function(request: Request): Iterator
+      return pluginRows(request, request.allowVolatileRows == true)
+    end,
+    scan = function(request: Request): ScanResult
+      return util.drain(pluginRows(request, false), request, #entries)
+    end,
+  }
+
+  --- Every record of the files `request` can reach, file by file in load order, each handed to the
+  --- file's own record scan with the constraints on its own columns.
+  local function recordRows(request: Request, volatile: boolean): Iterator
+    local wanted = util.columns(request)
+    local onlyPlugin = util.text(request, 'plugin')
+    local onlyLoad = util.number(request, 'load_index')
+    -- A file's own scan is handed the constraints on its own columns alone.
+    local kept: { util.Constraint } = {}
+    for _, constraint in request.constraints or {} do
+      if constraint.column ~= 'plugin' and constraint.column ~= 'load_index' then table.insert(kept, constraint) end
+    end
+
+    local inner: Request = table.clone(request)
+    inner.constraints = kept
+
+    local position = 0
+    local current: Iterator? = nil
+
+    local function nextRow(): Row?
+      while true do
+        local scan = current
+        if scan then
+          local row = scan.next()
+          if row then
+            if wanted.plugin then row.plugin = entries[position].name end
+            if wanted.load_index then row.load_index = position - 1 end
+            return row
+          end
+
+          current = nil
+        end
+
+        position += 1
+        if position > #entries then return nil end
+
+        local entry = entries[position]
+        if onlyPlugin and entry.name ~= onlyPlugin then continue end
+        if onlyLoad and position - 1 ~= onlyLoad then continue end
+
+        local plugin = open(entry)
+        if plugin then current = tes3Records.provider(plugin).iterate(inner) end
+      end
+    end
+
+    local handled = util.equalities(request, RecordEqualities)
+    return {
+      _jessqlIter = 'v1',
+      next = nextRow,
+      volatileRows = volatile,
+      handledWhere = request.whereComplete == true and handled,
+      ordered = false,
+      handledConstraints = handled,
+    }
+  end
+
+  local function recordCount(): number
+    local total = 0
+    for position in entries do total += recordsIn(position) or 0 end
+    return total
+  end
+
+  local records: Provider = {
+    columns = RecordColumns,
+    count = recordCount,
+    iterate = function(request: Request): Iterator
+      return recordRows(request, request.allowVolatileRows == true)
+    end,
+    -- A scan's rows are its own, so the capacity is only how far a limit's room is made.
+    scan = function(request: Request): ScanResult
+      return util.drain(recordRows(request, false), request, math.huge)
+    end,
+  }
+
+  return plugins, records
+end
+
+--- Registers `content.plugins` and `content.records` over `entries`, under those names unless
+--- others are given.
+local function register(db: Database, entries: { Entry }, pluginsName: string?, recordsName: string?): Database
+  local plugins, records = providers(entries)
+  db:register(pluginsName or 'content.plugins', plugins)
+  db:register(recordsName or 'content.records', records)
+  return db
+end
+
+return table.freeze { providers = providers, register = register }

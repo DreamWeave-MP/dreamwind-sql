@@ -57,6 +57,24 @@ artifact_sha256 = "72d5c82c48911dd11feb91cd2cc687f13ddab560224ad6e705c87eb20939c
 dependencies = []
 
 [[package]]
+id = "org.dreamweave.openmw-config"
+version = "4.2.0"
+digest = "1a84e63664f790aee1f7f16fcb23a1f511b0458028dc3b8c78737954a197328f"
+source = "publisher"
+manifest = "https://dreamweave-mp.github.io/Openmw_Config/dreamweave/projects/3aaf4fe0-616f-41a3-b520-306eda9347b0.json"
+artifact_sha256 = "d90b667ff0791baf86de6926ee198ae31a94f5c5ea7fbdb38d5f59e7451254c4"
+dependencies = []
+
+[[package]]
+id = "org.dreamweave.openmw-install"
+version = "0.1.0"
+digest = "d148659c977dc5a08240357b26ff38fb2d012a64e7e51370c0b0d699c43c6e6d"
+source = "publisher"
+manifest = "https://dreamweave-mp.github.io/openmw-install/dreamweave/projects/34eff1d9-fd7e-4c17-bf34-cdb8bf3ad546.json"
+artifact_sha256 = "bccf5abf697d83b5b8083346f6f8da251535d8b41dbd431d1a236b3a52c82ad5"
+dependencies = ["org.dreamweave.openmw-config", "org.dreamweave.vfs"]
+
+[[package]]
 id = "org.dreamweave.site"
 version = "0.1.1"
 digest = "d2d4af2903e741bf046ead35361609644c4272c588668988327937a5cdd1d071"

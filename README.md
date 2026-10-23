@@ -1,20 +1,37 @@
 # dreamwind-sql
 
-Relational views over TES3 plugins, NIF models, and an OpenMW VFS for `jessql`. This package owns
-no Bethesda/OpenMW semantics and no SQL engine; it is the adapter between the `tes3`, `nif`, and
-`vfs` packages and JessQL.
+Relational views over TES3 plugins, NIF models, an OpenMW VFS, and a whole load order for
+`jessql`, and a command that queries them. It owns no SQL engine and no file format: it is the
+adapter between the `esm`, `nif`, `vfs`, and `openmw-install` packages and JessQL. The one rule of
+OpenMW's it keeps is which content files are ESM files and which are Lua script lists.
 
 ## Package
 
-- package: `org.dreamweave.dreamwind-sql` 0.1.1
-- layer: `dream.sql`
-- dependencies: `tes3` 0.1, `nif` 0.1, `jessql` 0.1.1
+- package: `org.dreamweave.dreamwind-sql`
+- layers: `dream.sql`, the tables; `dream.sql.commands`, the command over a load order
+- dependencies: `esm` 0.1, `nif` 0.1, `jessql` 0.1.1, and for the command `openmw-config` 4.2 and
+  `openmw-install` 0.1
 
-A VFS is handed in by the caller and used through its methods, so the package does not depend on
-`vfs`: a program that queries one supplies that package itself.
+The tables take a VFS by its methods, so a program that queries one supplies it. The command finds
+a load order as Jess's other tools do and builds its VFS only when a query reads `vfs.files`.
+
+## The command
+
+```sh
+dreamwind-sql [--config <openmw.cfg or its folder>] [--plugin <file>] [--nif <file>] \
+              [--format table|json|yaml] (<query> | --file <query file>)
+```
+
+The load order is the one `--config` names, else OPENMW_CONFIG's, else OpenMW's own; with
+`--plugin` or `--nif` and none found, those are queried alone. `commands.query` is the same
+request as a typed table, for a program that wants rows rather than text.
 
 ## Default virtual tables
 
+- `content.plugins`: `index`, `name`, `kind`, `path`, `found`, `records`: the load order's content
+  files in order; `kind` is what OpenMW loads one as (`esm`, `scripts`, `unknown`)
+- `content.records`: `load_index`, `plugin`, `index`, `type`, `id`, `flags`, `size`, `dirty`,
+  `partial`: every record of every `esm` content file, a file read only when a query reaches it
 - `vfs.files`: `path`, `physical_path`, `name`, `stem`, `size`, `is_loose`, `is_archive`, `archive_path`, `archive_name`
 - `tes3.records`: `index`, `type`, `id`, `flags`, `size`, `dirty`, `partial`
 - `nif.records`: `index`, `type`, `name`, `decoded`

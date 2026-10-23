@@ -1,0 +1,208 @@
+--!strict
+-- A load order as tables, and the command that queries one: `content.plugins` and `content.records`
+-- over files written here, what a scan of the records hands each file, `commands.query` over an
+-- openmw.cfg naming them, and the command line read into a command. No query here leaves the load
+-- order unnamed with this process's fallbacks: it would read the machine's own.
+local cli = require '@dreamwind-sql/cli'
+local commands = require '@dreamwind-sql/commands'
+local content = require '@dreamwind-sql/content'
+local engine = require '@jessql/engine'
+local fs = require '@dream/fs'
+local test = require '@jess/test'
+
+type Row = engine.Row
+
+local suite, expect = test.new(), test.expect
+local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
+
+local function u32(value: number): string return string.pack('<I4', value) end
+
+local function subrecord(tag: string, payload: string): string
+  return tag .. u32(#payload) .. payload
+end
+
+local function record(tag: string, payload: string): string
+  return tag .. u32(#payload) .. u32(0) .. u32(0) .. payload
+end
+
+local function plugin(...: string): string
+  local records = { record('TES3', subrecord('HEDR', string.rep('\0', 300))) }
+  for _, id in { ... } do table.insert(records, record('STAT', subrecord('NAME', `{id}\0`))) end
+
+  return table.concat(records)
+end
+
+local function write(path: string, data: string)
+  local written, problem = fs.writeFile(path, data, { createParents = true })
+  if not written then error(problem, 0) end
+end
+
+export type Order = { root: string, data: string, cfg: string }
+
+--- A load order: two plugins, a scripts file between them, and a plugin no data folder has.
+local function order(name: string): Order
+  local root = fs.join(scratch, name)
+  local data = fs.join(root, 'data')
+  write(fs.join(data, 'A.esm'), plugin('rock', 'tree'))
+  write(fs.join(data, 'B.ESP'), plugin('oak'))
+  write(fs.join(data, 'C.omwscripts'), 'GLOBAL: scripts/c.lua\n')
+
+  local cfg = fs.join(root, 'openmw.cfg')
+  write(cfg, `data="{data}"\ncontent=A.esm\ncontent=C.omwscripts\ncontent=B.ESP\ncontent=Missing.esp\n`)
+  return { root = root, data = data, cfg = cfg }
+end
+
+local function entries(built: Order): { content.Entry }
+  return {
+    { name = 'A.esm', path = fs.join(built.data, 'A.esm') },
+    { name = 'C.omwscripts', path = fs.join(built.data, 'C.omwscripts') },
+    { name = 'B.ESP', path = fs.join(built.data, 'B.ESP') },
+    { name = 'Missing.esp' },
+  }
+end
+
+local function database(built: Order): engine.Database
+  return content.register(engine.new(), entries(built))
+end
+
+suite.describe('content.plugins', function()
+  suite.it('is the load order: each file, what OpenMW loads it as, and how many records an esm has', function()
+    local result = database(order 'plugins'):query('SELECT index, name, kind, found, records FROM content.plugins')
+    expect(result.rows).toEqual {
+      { index = 0, name = 'A.esm', kind = 'esm', found = true, records = 3 },
+      { index = 1, name = 'C.omwscripts', kind = 'scripts', found = true },
+      { index = 2, name = 'B.ESP', kind = 'esm', found = true, records = 2 },
+      { index = 3, name = 'Missing.esp', kind = 'esm', found = false },
+    }
+  end)
+end)
+
+suite.describe('content.records', function()
+  suite.it('is every record of every esm, with its file\'s name and place in the load order', function()
+    local result = database(order 'records'):query(
+      "SELECT load_index, plugin, index, id FROM content.records WHERE type = 'STAT'"
+    )
+    expect(result.rows).toEqual {
+      { load_index = 0, plugin = 'A.esm', index = 1, id = 'rock' },
+      { load_index = 0, plugin = 'A.esm', index = 2, id = 'tree' },
+      { load_index = 2, plugin = 'B.ESP', index = 1, id = 'oak' },
+    }
+    expect(database(order 'records-count'):query('SELECT COUNT(*) AS total FROM content.records').rows)
+      .toEqual { { total = 5 } }
+  end)
+
+  suite.it('reads only the file a plugin or a load index names, and says it applied them', function()
+    local built = order 'records-pushed'
+    local _, records = content.providers(entries(built))
+    local function rows(column: string, wanted: unknown): ({ engine.SourceRow }, boolean)
+      local iterator = (records.iterate :: (engine.Request) -> engine.Iterator) {
+        columns = { 'plugin', 'id' },
+        constraints = { { column = column, op = '=', value = wanted } },
+        whereComplete = true,
+        allowVolatileRows = false,
+      }
+      local found: { engine.SourceRow } = {}
+      while true do
+        local row = iterator.next()
+        if not row then break end
+
+        table.insert(found, row)
+      end
+
+      return found, iterator.handledConstraints == true
+    end
+
+    local byName, nameHandled = rows('plugin', 'B.ESP')
+    expect(byName).toEqual { { plugin = 'B.ESP' }, { plugin = 'B.ESP', id = 'oak' } }
+    expect(nameHandled).toBe(true)
+
+    local byLoad, loadHandled = rows('load_index', 0)
+    expect(#byLoad).toBe(3)
+    expect(loadHandled).toBe(true)
+  end)
+
+  suite.it('names the file a query couldn\'t parse', function()
+    local built = order 'records-broken'
+    write(fs.join(built.data, 'A.esm'), 'not a plugin')
+    expect(function() database(built):query('SELECT id FROM content.records') end).toThrow 'content: A.esm: '
+  end)
+end)
+
+suite.describe('commands.query', function()
+  suite.it('reads the load order an openmw.cfg names, and says which it read', function()
+    local built = order 'query-config'
+    local result, problem = commands.query {
+      sql = "SELECT plugin, id FROM content.records WHERE id = 'oak'",
+      config = built.cfg,
+      fallbacks = {},
+    }
+    expect(problem).toBeNil()
+    local answer = assert(result)
+    expect(answer.columns).toEqual { 'plugin', 'id' }
+    expect(answer.rows).toEqual { { plugin = 'B.ESP', id = 'oak' } }
+    expect(answer.configuration).toBe(built.cfg)
+  end)
+
+  suite.it('queries a plugin on its own when no load order is found, and refuses nothing to query', function()
+    local built = order 'query-plugin'
+    local result = assert(commands.query {
+      sql = 'SELECT id FROM tes3.records WHERE index = 1',
+      plugin = fs.join(built.data, 'B.ESP'),
+      fallbacks = {},
+    })
+    expect(result.rows).toEqual { { id = 'oak' } }
+    expect(result.configuration).toBeNil()
+
+    local none, problem = commands.query { sql = 'SELECT 1', fallbacks = {} }
+    expect(none).toBeNil()
+    expect(problem).toBe('no OpenMW configuration was named, and OpenMW\'s own folder is unknown here')
+  end)
+
+  suite.it('says why a configuration or a query can\'t be used', function()
+    local built = order 'query-refused'
+    local _, missing = commands.query { sql = 'SELECT 1', config = fs.join(built.root, 'nowhere'), fallbacks = {} }
+    expect(missing).toBe(`the configuration '{fs.join(built.root, 'nowhere')}' isn't a file or a folder`)
+
+    local _, empty = commands.query { sql = 'SELECT 1', config = '', fallbacks = {} }
+    expect(empty).toBe('an empty configuration names none')
+
+    local _, unread = commands.query { sql = 'SELECT FROM', config = built.cfg, fallbacks = {} }
+    expect(unread).toContain 'jessql parser'
+  end)
+end)
+
+suite.describe('the command line', function()
+  suite.it('reads a query, its files, and its format', function()
+    expect((cli.parse { '--config=x.cfg', '--plugin', 'a.esp', '--format', 'json', 'SELECT 1' })).toEqual {
+      action = 'query',
+      sql = 'SELECT 1',
+      config = 'x.cfg',
+      plugin = 'a.esp',
+      format = 'json',
+    }
+    expect((cli.parse { '--file', 'q.sql' })).toEqual { action = 'query', file = 'q.sql', format = 'table' }
+    expect((cli.parse { '-h' })).toEqual { action = 'help', format = 'table' }
+  end)
+
+  suite.it('refuses what it can\'t read, and says why', function()
+    local refused: { { argv: { string }, message: string } } = {
+      { argv = {}, message = 'a query is required, or --file naming one' },
+      { argv = { 'SELECT 1', 'SELECT 2' }, message = 'one query at a time; \'SELECT 2\' is a second' },
+      { argv = { '--file', 'q.sql', 'SELECT 1' }, message = 'a query and --file are two queries; give one' },
+      { argv = { '--bogus', 'SELECT 1' }, message = 'unknown option \'--bogus\'' },
+      { argv = { '--plugin' }, message = '--plugin requires a plugin' },
+      { argv = { '--config=', 'SELECT 1' }, message = '--config requires an openmw.cfg or its folder' },
+      { argv = { '--nif', 'a', '--nif', 'b', 'SELECT 1' }, message = '--nif is given twice' },
+      { argv = { '--format', 'csv', 'SELECT 1' }, message = '--format takes table, json or yaml, not \'csv\'' },
+    }
+
+    for _, case in refused do
+      expect({ argv = case.argv, message = select(2, cli.parse(case.argv)) }).toEqual(case)
+    end
+
+    -- A refused command line is refused before any configuration is looked for.
+    expect(cli.run { '--format', 'csv', 'SELECT 1' }).toBe(8)
+  end)
+end)
+
+return suite

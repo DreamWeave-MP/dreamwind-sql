@@ -1,0 +1,243 @@
+--!strict
+--[[
+@dreamwind-sql/cli: dreamwind-sql's command line, over `@dreamwind-sql/commands`.
+
+  run(argv) -> exit status
+  parse(argv) -> (command, nil) | (nil, message)
+
+  dreamwind-sql [--config <openmw.cfg or its folder>] [--plugin <file>] [--nif <file>]
+                [--format table|json|yaml] (<query> | --file <query file>)
+  dreamwind-sql --help
+
+A query reads the load order `--config` names, else OPENMW_CONFIG's, else OpenMW's own, and the
+plugin and the NIF named on their own. A flag's value follows it, or is attached with `=`; each flag
+is given once.
+
+Exit statuses: 0 when the query ran, or help was asked for; 8 when the command line can't be used
+(an unknown flag, a missing or repeated value, no query or two, nothing to query); 9 when the query
+couldn't run (a file that can't be read, a query the engine refuses). Messages go to standard error
+as `dreamwind-sql: <message>`.
+]]
+
+local commands = require './commands'
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local process = require '@dream/process'
+local value = require '@jess/data/value'
+local yaml = require '@jess/yaml'
+
+export type Format = 'table' | 'json' | 'yaml'
+
+export type Command = {
+  action: 'query' | 'help',
+  sql: string?,
+  file: string?,
+  config: string?,
+  plugin: string?,
+  nif: string?,
+  format: Format,
+}
+
+local Exit = table.freeze { ok = 0, invalidInput = 8, runtime = 9 }
+
+local Usage = [[
+dreamwind-sql: SQL over a load order, a plugin, and a NIF
+
+  dreamwind-sql [--config <openmw.cfg or its folder>] [--plugin <file>] [--nif <file>]
+                [--format table|json|yaml] (<query> | --file <query file>)
+  dreamwind-sql --help
+
+The tables:
+  content.plugins   index, name, path, found, records: the load order's content files, in order
+  content.records   load_index, plugin, index, type, id, flags, size, dirty, partial: every
+                    record of every content file
+  vfs.files         path, physical_path, name, stem, size, is_loose, is_archive, archive_path,
+                    archive_name: the files the load order's data folders and archives provide
+  tes3.records      index, type, id, flags, size, dirty, partial: --plugin's records
+  nif.records       index, type, name, decoded: --nif's records
+  nif.scene_nodes   --nif's scene, node by node
+
+  --config <path>   the load order's openmw.cfg, or the folder holding it; without it the one
+                    OPENMW_CONFIG names, else OpenMW's own. With --plugin or --nif and none
+                    found, those are queried alone
+  --plugin <file>   a plugin to query as tes3.records
+  --nif <file>      a NIF to query as nif.records and nif.scene_nodes
+  --format <format> table (the default), json or yaml
+  --file <path>     read the query from this file instead of the command line
+
+A table is read only when a query reaches it: naming a load order costs nothing until a query
+reads from it.
+
+Exit status: 0 the query ran; 8 the command line can't be used; 9 the query couldn't run.]]
+
+-- The flags that take a value, by the command field each sets and what it takes.
+local Valued: { [string]: { field: string, value: string } } = {
+  ['--config'] = { field = 'config', value = 'an openmw.cfg or its folder' },
+  ['--plugin'] = { field = 'plugin', value = 'a plugin' },
+  ['--nif'] = { field = 'nif', value = 'a NIF' },
+  ['--format'] = { field = 'format', value = 'a format' },
+  ['--file'] = { field = 'file', value = 'a query file' },
+}
+
+local function out(text: string) process.write('stdout', `{text}\n`) end
+
+local function err(text: string) process.write('stderr', `{text}\n`) end
+
+local function usage(message: string): number
+  err(`dreamwind-sql: {message}`)
+  return Exit.invalidInput
+end
+
+--- What an argument list asks for, or why it can't be read.
+local function parse(argv: { string }): (Command?, string?)
+  local fields: { [string]: string } = {}
+  local queries: { string } = {}
+  local index = 1
+
+  while index <= #argv do
+    local argument = argv[index]
+    index += 1
+
+    if argument == '--help' or argument == '-h' then return { action = 'help', format = 'table' }, nil end
+
+    if string.sub(argument, 1, 1) ~= '-' or argument == '-' then
+      table.insert(queries, argument)
+      continue
+    end
+
+    local flag, attached = string.match(argument, '^(%-%-[^=]+)=(.*)$')
+    local name = flag or argument
+    local valued = Valued[name]
+    if not valued then return nil, `unknown option '{argument}'` end
+
+    local given = attached
+    if not given then
+      given = argv[index]
+      index += 1
+    end
+
+    if not given or given == '' then return nil, `{name} requires {valued.value}` end
+
+    if fields[valued.field] then return nil, `{name} is given twice` end
+
+    fields[valued.field] = given
+  end
+
+  local format = fields.format or 'table'
+  if format ~= 'table' and format ~= 'json' and format ~= 'yaml' then
+    return nil, `--format takes table, json or yaml, not '{format}'`
+  end
+
+  if #queries > 1 then return nil, `one query at a time; '{queries[2]}' is a second` end
+
+  if #queries == 1 and fields.file then return nil, 'a query and --file are two queries; give one' end
+
+  if #queries == 0 and not fields.file then return nil, 'a query is required, or --file naming one' end
+
+  return {
+    action = 'query',
+    sql = queries[1],
+    file = fields.file,
+    config = fields.config,
+    plugin = fields.plugin,
+    nif = fields.nif,
+    format = format :: Format,
+  },
+    nil
+end
+
+--- A cell as a table shows it: NULL for none, and every other value as Luau writes it.
+local function cell(found: unknown): string
+  if found == nil or found == json.null then return 'NULL' end
+
+  return tostring(found)
+end
+
+--- The rows as aligned text, a header and a rule above them, and how many there were below.
+local function tabulated(columns: { string }, rows: { { [string]: unknown } }): string
+  local widths = [for column in columns => utf8.len(column) or #column]
+  local cells: { { string } } = {}
+  for _, row in rows do
+    local line = [for column in columns => cell(row[column])]
+    for position, text in line do widths[position] = math.max(widths[position], utf8.len(text) or #text) end
+    table.insert(cells, line)
+  end
+
+  local function padded(line: { string }): string
+    local parts: { string } = {}
+    for position, text in line do
+      table.insert(parts, text .. string.rep(' ', widths[position] - (utf8.len(text) or #text)))
+    end
+
+    return (string.gsub(table.concat(parts, '  '), '%s+$', ''))
+  end
+
+  local lines = { padded(columns), padded([for width in widths => string.rep('-', width)]) }
+  for _, line in cells do table.insert(lines, padded(line)) end
+  table.insert(lines, if #rows == 1 then '(1 row)' else `({#rows} rows)`)
+  return table.concat(lines, '\n')
+end
+
+--- A row as a map in the query's column order, a missing cell a null.
+local function mapped(columns: { string }, row: { [string]: unknown }): value.Map
+  local entry = value.map()
+  for _, column in columns do
+    local found = row[column]
+    value.set(entry, column, if found == nil then value.Null else found)
+  end
+
+  return entry
+end
+
+--- The rows as a list of maps, for JSON and YAML.
+local function documented(columns: { string }, rows: { { [string]: unknown } }): unknown
+  local items: { unknown } = {}
+  for _, row in rows do table.insert(items, mapped(columns, row)) end
+
+  return value.array(items)
+end
+
+local function run(argv: { string }): number
+  local command, message = parse(argv)
+  if not command then return usage(message :: string) end
+
+  if command.action == 'help' then
+    out(Usage)
+    return Exit.ok
+  end
+
+  local sql = command.sql
+  if command.file then
+    local text, problem = fs.readFile(command.file)
+    if not text then
+      err(`dreamwind-sql: can't read the query file '{command.file}': {problem}`)
+      return Exit.runtime
+    end
+
+    sql = buffer.tostring(text)
+  end
+
+  local result, failure = commands.query {
+    sql = sql :: string,
+    config = command.config,
+    plugin = command.plugin,
+    nif = command.nif,
+  }
+
+  if not result then
+    err(`dreamwind-sql: {failure}`)
+    return Exit.runtime
+  end
+
+  if command.format == 'json' then
+    out(json.encode(documented(result.columns, result.rows)))
+  elseif command.format == 'yaml' then
+    out(yaml.encode(documented(result.columns, result.rows)))
+  else
+    out(tabulated(result.columns, result.rows))
+  end
+
+  return Exit.ok
+end
+
+return table.freeze { Exit = Exit, parse = parse, run = run }
