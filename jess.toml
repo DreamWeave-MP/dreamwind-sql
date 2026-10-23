@@ -2,7 +2,7 @@ manifest_version = 1
 
 [package]
 id = "org.dreamweave.dreamwind-sql"
-version = "0.1.1"
+version = "0.2.0"
 jess_api = "1"
 include = ["src", "bench", "README.md", "tests"]
 tests = ["tests/run.jsl", "tests/load.jsl", "tests/style.jsl"]

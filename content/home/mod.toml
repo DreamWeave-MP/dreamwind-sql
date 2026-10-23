@@ -19,3 +19,13 @@ jess = "org.dreamweave.dreamwind-sql"
 version = "0.1.1"
 date = 2026-10-21
 summary = "First release published as a DreamWeave project."
+
+[[releases]]
+version = "0.2.0"
+date = 2026-10-23
+summary = "SQL over a whole load order, and a command that runs it: `dreamwind-sql \"SELECT ...\"`."
+added = [
+    "`content.plugins`: the load order's content files in order, with what OpenMW loads each as (`esm`, `scripts`) and how many records an ESM file has.",
+    "`content.records`: every record of every ESM content file, with its file's name and place in the load order. A file is read only when a query reaches it, and a WHERE on `plugin` or `load_index` reads that file alone.",
+    "The `dreamwind-sql` command and `commands.query`: a query over the load order `--config` names, else OPENMW_CONFIG's, else OpenMW's own, with `--plugin` and `--nif` for single files, printed as a table, JSON or YAML. The VFS is built only when a query reads `vfs.files`.",
+]
